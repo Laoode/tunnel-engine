@@ -7,6 +7,8 @@
 </div>
 
 <p align="center">
+  <img src="https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=yellow" />
+  <img src="https://img.shields.io/badge/CUDA-Supported-76B900?logo=nvidia&logoColor=green" />
   <img src="https://img.shields.io/badge/vLLM-Model%20Serving-1f4b99" />
   <img src="https://img.shields.io/badge/LMCache-Global%20Cache-orange" />
   <img src="https://img.shields.io/badge/LiteLLM-Orchestration-white" />
