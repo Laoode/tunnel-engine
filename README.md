@@ -37,6 +37,8 @@ LiteLLM is used for intelligent load balancing. While vLLM runs on multiple sepa
 Install:
 ```bash
 uv pip install -r tunnel-engine/requirements/dev.txt --torch-backend=auto
+# Uninstall
+# uv pip uninstall -r tunnel-engine/requirements/dev.txt -y
 ```
 
 Running models:
@@ -46,12 +48,24 @@ vllm serve Qwen/Qwen3.5-0.8B \
   --port 8000 \
   --tensor-parallel-size 1 \
   --gpu-memory-utilization 0.35 \
-  --max-model-len 65536 &
+  --max-model-len 65536
 
 # Instance 2: MiniCPM 1B 
 vllm serve openbmb/MiniCPM5-1B \
   --port 8001 \
   --tensor-parallel-size 1 \
   --gpu-memory-utilization 0.45 \
-  --max-model-len 65536 &
+  --max-model-len 65536
+```
+
+Makefile:
+```bash
+# Validate the registry parses correctly
+make check
+
+# Generate derived configs (LiteLLM + LMCache yamls)
+make generate
+
+# Verify both instances (already running)
+make health
 ```
