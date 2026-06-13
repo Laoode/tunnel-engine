@@ -1,0 +1,26 @@
+# AUTO-GENERATED — do not edit manually.
+# Source of truth : configs/models.yaml
+# Regenerate      : make generate
+
+model_list:
+- model_name: qwen-0.8b
+  litellm_params:
+    model: openai/Qwen/Qwen3.5-0.8B
+    api_base: http://localhost:8000/v1
+    api_key: none
+- model_name: minicpm-1b
+  litellm_params:
+    model: openai/openbmb/MiniCPM5-1B
+    api_base: http://localhost:8001/v1
+    api_key: none
+router_settings:
+  routing_strategy: least-busy
+  num_retries: 3
+  retry_after: 5
+  allowed_fails: 1
+  cooldown_time: 60
+general_settings:
+  master_key: sk-tunnel-dev-change-in-prod
+litellm_settings:
+  request_timeout: 120
+  drop_params: true

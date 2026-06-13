@@ -1,0 +1,101 @@
+# =============================================================================
+# Tunnel Engine — Model Registry
+# =============================================================================
+# SINGLE SOURCE OF TRUTH. Edit here, run `make generate` to rebuild all
+# derived configs (LiteLLM proxy config + per-instance LMCache configs).
+#
+# To add a model: copy any instance block, change id/model/port/gpu_memory_utilization.
+# To remove a model: delete the block, run `make generate`.
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# Defaults — merged into every instance. Instance-level values always win.
+# ---------------------------------------------------------------------------
+defaults:
+  tensor_parallel_size: 1      # set to N for multi-GPU (must divide evenly)
+  dtype: "auto"                # auto | float16 | bfloat16
+  max_model_len: 65536
+  lora:
+    enabled: false
+    modules: []
+  lmcache:
+    enabled: true
+    backend: cpu               # cpu | disk | redis
+    max_cache_size_gb: 20      # RAM to budget for KV-cache per instance
+    chunk_size: 256
+  extra_args: []               # raw vllm flags passthrough, e.g. ["--enforce-eager"]
+
+# ---------------------------------------------------------------------------
+# Instances — one entry per vLLM process
+# ---------------------------------------------------------------------------
+instances:
+  - id: qwen-0.8b
+    model: Qwen/Qwen3.5-0.8B
+    port: 8000
+    gpu_memory_utilization: 0.35
+    description: "Qwen 0.8B — fast general inference"
+
+  - id: minicpm-1b
+    model: openbmb/MiniCPM5-1B
+    port: 8001
+    gpu_memory_utilization: 0.45
+    description: "MiniCPM 1B — general purpose"
+
+  # ── Add more instances below ─────────────────────────────────────────────
+  #
+  # Standard model:
+  # - id: llama-3b
+  #   model: meta-llama/Llama-3.2-3B-Instruct
+  #   port: 8002
+  #   gpu_memory_utilization: 0.30
+  #
+  # LoRA adapter on top of a base model:
+  # - id: custom-lora
+  #   model: meta-llama/Llama-3.2-3B-Instruct
+  #   port: 8003
+  #   gpu_memory_utilization: 0.30
+  #   lora:
+  #     enabled: true
+  #     modules:
+  #       - name: my-task-adapter
+  #         path: /path/to/lora/adapter
+  #
+  # Custom Jinja2 output template (per-service response shaping):
+  # - id: service-a-model
+  #   model: Qwen/Qwen3.5-0.8B
+  #   port: 8004
+  #   gpu_memory_utilization: 0.35
+  #   chat_template: configs/templates/service_a.jinja2
+  #
+  # Multi-GPU (2x L4, tensor parallel across both):
+  # - id: large-model
+  #   model: Qwen/Qwen2.5-7B-Instruct
+  #   port: 8005
+  #   gpu_memory_utilization: 0.80
+  #   tensor_parallel_size: 2
+  #
+  # Extra vLLM flags passthrough:
+  # - id: eager-model
+  #   model: org/model
+  #   port: 8006
+  #   gpu_memory_utilization: 0.40
+  #   extra_args:
+  #     - "--enforce-eager"
+  #     - "--max-num-seqs"
+  #     - "64"
+
+# ---------------------------------------------------------------------------
+# LiteLLM proxy — single unified endpoint wrapping all instances above
+# ---------------------------------------------------------------------------
+litellm:
+  port: 4000
+  master_key: "sk-tunnel-dev-change-in-prod"
+  routing_strategy: least-busy  # least-busy | simple-shuffle | latency-based-routing
+
+# ---------------------------------------------------------------------------
+# Global LMCache defaults (overridable per-instance under lmcache: above)
+# ---------------------------------------------------------------------------
+lmcache:
+  backend: cpu
+  max_cache_size_gb: 20
+  chunk_size: 256
