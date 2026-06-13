@@ -1,9 +1,13 @@
 """
 tunnel/health/checker.py
 =========================
-Concurrently polls all registered vLLM instances.
+Concurrently polls all registered vLLM instances and returns structured results.
 
-All checks fire in parallel (asyncio.gather) — N instances ≈ same wall time as 1.
+Design:
+  - All checks run in parallel (asyncio.gather) — N instances ~ same wall time as 1.
+  - Returns typed dataclasses, not raw dicts — callers can pattern-match on status.
+  - format_report() is presentation-only; keep it separate from check logic.
+  - collect_gpu_stats() is optional — degrades gracefully if pynvml is unavailable.
 """
 from __future__ import annotations
 
@@ -35,6 +39,49 @@ class InstanceHealth:
     @property
     def is_healthy(self) -> bool:
         return self.status == InstanceStatus.OK
+
+
+@dataclass
+class GpuStats:
+    """Memory stats for a single GPU."""
+
+    index: int
+    used_gb: float
+    total_gb: float
+    utilization_pct: float  # 0.0-1.0
+
+    @property
+    def is_near_oom(self) -> bool:
+        """True when >90% of VRAM is consumed — actionable OOM warning threshold."""
+        return self.utilization_pct > 0.90
+
+
+def collect_gpu_stats() -> list[GpuStats]:
+    """Return memory stats for all visible GPUs.
+
+    Uses pynvml (installed with vLLM). Returns an empty list rather than
+    raising if the library is unavailable or NVML fails to initialise —
+    callers should treat an empty list as "stats not available".
+
+    Returns:
+        List of GpuStats, one per GPU. Empty if pynvml is unavailable.
+    """
+    try:
+        import pynvml  # optional: nvidia-ml-py, pulled in by vllm
+        pynvml.nvmlInit()
+        stats = []
+        for i in range(pynvml.nvmlDeviceGetCount()):
+            handle = pynvml.nvmlDeviceGetHandleByIndex(i)
+            info = pynvml.nvmlDeviceGetMemoryInfo(handle)
+            stats.append(GpuStats(
+                index=i,
+                used_gb=round(info.used / 1024 ** 3, 2),
+                total_gb=round(info.total / 1024 ** 3, 2),
+                utilization_pct=round(info.used / info.total, 3),
+            ))
+        return stats
+    except Exception:
+        return []
 
 
 async def _check_one(
@@ -74,7 +121,17 @@ async def check_all(
     registry: TunnelRegistry,
     timeout: float = 5.0,
 ) -> list[InstanceHealth]:
-    """Concurrently poll every registered vLLM instance."""
+    """Concurrently poll every registered vLLM instance.
+
+    All checks fire in parallel — total time ~ slowest single check.
+
+    Args:
+        registry: The loaded TunnelRegistry.
+        timeout: Per-instance request timeout in seconds.
+
+    Returns:
+        List of InstanceHealth results, one per instance.
+    """
     async with httpx.AsyncClient() as client:
         return list(
             await asyncio.gather(
@@ -86,16 +143,39 @@ async def check_all(
         )
 
 
-def format_report(results: list[InstanceHealth]) -> str:
-    lines = ["", "── Tunnel Engine Health ──────────────────────────────────"]
+def format_report(
+    results: list[InstanceHealth],
+    gpu_stats: list[GpuStats] | None = None,
+) -> str:
+    """Render a human-readable health report.
+
+    Args:
+        results: Per-instance health results from check_all().
+        gpu_stats: Optional GPU memory stats from collect_gpu_stats().
+
+    Returns:
+        Multi-line string suitable for printing to stdout.
+    """
+    lines = ["", "-- Tunnel Engine Health --------------------------------------------------"]
     for h in results:
-        icon = "✓" if h.is_healthy else "✗"
-        lat = f"{h.latency_ms}ms" if h.latency_ms is not None else "—"
-        err = f"  ← {h.error}" if h.error else ""
-        lines.append(
-            f"  {icon}  {h.id:<24}  :{h.port:<6}  {lat:<10}{err}"
-        )
+        icon = "[ok]" if h.is_healthy else "[!!]"
+        lat = f"{h.latency_ms}ms" if h.latency_ms is not None else "-"
+        err = f"  <- {h.error}" if h.error else ""
+        lines.append(f"  {icon}  {h.id:<24}  :{h.port:<6}  {lat:<10}{err}")
+
     up = sum(1 for h in results if h.is_healthy)
     lines.append(f"\n  {up}/{len(results)} instances healthy")
-    lines.append("────────────────────────────────────────────────────────────\n")
+
+    if gpu_stats:
+        lines.append("")
+        for gpu in gpu_stats:
+            warn = "  ** NEAR OOM **" if gpu.is_near_oom else ""
+            lines.append(
+                f"  GPU {gpu.index}  {gpu.used_gb}/{gpu.total_gb} GB"
+                f"  ({gpu.utilization_pct:.1%}){warn}"
+            )
+    elif gpu_stats is not None:
+        lines.append("  GPU stats unavailable (pynvml not initialised)")
+
+    lines.append("--------------------------------------------------------------------------\n")
     return "\n".join(lines)

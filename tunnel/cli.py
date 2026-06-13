@@ -5,7 +5,7 @@ Single entry point for all dev operations.
 
 Usage:
   python -m tunnel.cli serve   <instance-id>   Launch a vLLM instance
-  python -m tunnel.cli health                  Poll all instance health
+  python -m tunnel.cli health                  Poll all instance health + GPU memory
   python -m tunnel.cli generate                Rebuild all derived configs
   python -m tunnel.cli list                    List registered instances
   python -m tunnel.cli proxy                   Start the LiteLLM proxy
@@ -23,20 +23,21 @@ import os
 import sys
 from pathlib import Path
 
-from tunnel.registry import load_registry
-from tunnel.gateway.config_builder import write_litellm_config
 from tunnel.cache.lmcache_config import write_lmcache_configs
-from tunnel.health.checker import check_all, format_report
+from tunnel.gateway.config_builder import write_litellm_config
+from tunnel.health.checker import check_all, collect_gpu_stats, format_report
+from tunnel.registry import load_registry
 
 REGISTRY_PATH = "configs/models.yaml"
 LITELLM_CONFIG = "configs/litellm/config.yaml"
 
 
 def cmd_serve(instance_id: str) -> None:
-    """
-    Build a vLLM serve command for the given instance and exec() it.
-    Handles: LoRA, custom Jinja2 templates, LMCache env var,
-    tensor-parallel-size (multi-GPU), and extra_args passthrough.
+    """Launch a vLLM instance by registry ID.
+
+    Handles LoRA, custom Jinja2 templates, LMCache env var,
+    tensor-parallel-size, and extra_args passthrough.
+    Replaces the current process via os.execvpe — no return.
     """
     registry = load_registry(REGISTRY_PATH)
     inst = registry.get_instance(instance_id)
@@ -59,13 +60,11 @@ def cmd_serve(instance_id: str) -> None:
         "--dtype",                   inst.dtype,
     ]
 
-    # ── LoRA ──────────────────────────────────────────────────────────────
     if inst.lora.enabled:
         cmd.append("--enable-lora")
         for module in inst.lora.modules:
             cmd += ["--lora-modules", f"{module.name}={module.path}"]
 
-    # ── Custom Jinja2 chat template ───────────────────────────────────────
     if inst.chat_template:
         template_path = Path(inst.chat_template)
         if not template_path.exists():
@@ -77,10 +76,8 @@ def cmd_serve(instance_id: str) -> None:
         else:
             cmd += ["--chat-template", str(template_path)]
 
-    # ── Extra args passthrough ────────────────────────────────────────────
     cmd.extend(inst.extra_args)
 
-    # ── LMCache env var ───────────────────────────────────────────────────
     env = os.environ.copy()
     if inst.lmcache.enabled:
         lmcache_cfg_path = Path(f"configs/lmcache/{inst.id}.yaml")
@@ -93,58 +90,66 @@ def cmd_serve(instance_id: str) -> None:
                 file=sys.stderr,
             )
 
-    print(f"▶  {' '.join(cmd)}\n", file=sys.stderr)
-    os.execvpe(cmd[0], cmd, env)   # replaces current process — no return
+    print(f">>  {' '.join(cmd)}\n", file=sys.stderr)
+    os.execvpe(cmd[0], cmd, env)
 
 
 def cmd_health() -> None:
+    """Poll all vLLM instances and print a health + GPU memory report."""
     registry = load_registry(REGISTRY_PATH)
     results = asyncio.run(check_all(registry))
-    print(format_report(results))
+    gpu_stats = collect_gpu_stats()
+    print(format_report(results, gpu_stats=gpu_stats))
     if not all(h.is_healthy for h in results):
         sys.exit(1)
 
 
 def cmd_generate() -> None:
+    """Rebuild all derived configs from configs/models.yaml."""
     registry = load_registry(REGISTRY_PATH)
 
     litellm_path = write_litellm_config(registry, LITELLM_CONFIG)
-    print(f"✓ LiteLLM config    → {litellm_path}")
+    print(f"  LiteLLM config    -> {litellm_path}")
 
     lmcache_paths = write_lmcache_configs(registry)
     for p in lmcache_paths:
-        print(f"✓ LMCache config    → {p}")
+        print(f"  LMCache config    -> {p}")
 
     print(f"\n  {len(registry.instances)} instance(s) registered:")
     for inst in registry.instances:
         flags = []
         if inst.lora.enabled:
-            flags.append(f"LoRA×{len(inst.lora.modules)}")
+            flags.append(f"LoRA x{len(inst.lora.modules)}")
         if inst.chat_template:
             flags.append(f"template:{Path(inst.chat_template).name}")
         if inst.tensor_parallel_size > 1:
             flags.append(f"TP={inst.tensor_parallel_size}")
+        if inst.fallbacks:
+            flags.append(f"fallback->{inst.fallbacks}")
         flag_str = f"  [{', '.join(flags)}]" if flags else ""
-        print(f"  · {inst.id:<24}  :{inst.port}  {inst.model}{flag_str}")
+        print(f"  . {inst.id:<24}  :{inst.port}  {inst.model}{flag_str}")
 
     print(f"\n  LiteLLM proxy will listen on :{registry.litellm.port}")
 
 
 def cmd_list() -> None:
+    """List all registered instances."""
     registry = load_registry(REGISTRY_PATH)
     print(f"\n{'ID':<24}  {'PORT':<6}  {'GPU':<6}  {'TP':<4}  MODEL")
-    print("─" * 72)
+    print("-" * 72)
     for inst in registry.instances:
+        fb = f"  -> {inst.fallbacks}" if inst.fallbacks else ""
         print(
             f"{inst.id:<24}  {inst.port:<6}  "
             f"{inst.gpu_memory_utilization:<6}  {inst.tensor_parallel_size:<4}  "
-            f"{inst.model}"
+            f"{inst.model}{fb}"
         )
-    print(f"\n  Proxy → :{registry.litellm.port}  "
+    print(f"\n  Proxy -> :{registry.litellm.port}  "
           f"({registry.litellm.routing_strategy})\n")
 
 
 def cmd_proxy() -> None:
+    """Start the LiteLLM proxy. Requires `make generate` to have been run first."""
     config_path = Path(LITELLM_CONFIG)
     if not config_path.exists():
         print(
@@ -160,7 +165,7 @@ def cmd_proxy() -> None:
         "--config", str(config_path),
         "--port",   str(registry.litellm.port),
     ]
-    print(f"▶  {' '.join(cmd)}\n", file=sys.stderr)
+    print(f">>  {' '.join(cmd)}\n", file=sys.stderr)
     os.execvpe(cmd[0], cmd, os.environ.copy())
 
 

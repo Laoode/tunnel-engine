@@ -1,3 +1,17 @@
-from .checker import check_all, format_report, InstanceHealth, InstanceStatus
+from .checker import (
+    GpuStats,
+    InstanceHealth,
+    InstanceStatus,
+    check_all,
+    collect_gpu_stats,
+    format_report,
+)
 
-__all__ = ["check_all", "format_report", "InstanceHealth", "InstanceStatus"]
+__all__ = [
+    "GpuStats",
+    "InstanceHealth",
+    "InstanceStatus",
+    "check_all",
+    "collect_gpu_stats",
+    "format_report",
+]

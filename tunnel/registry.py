@@ -20,11 +20,6 @@ import yaml
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 
-# ---------------------------------------------------------------------------
-# Sub-models
-# ---------------------------------------------------------------------------
-
-
 class LoRAModule(BaseModel):
     name: str
     path: str
@@ -70,8 +65,9 @@ class InstanceConfig(BaseModel):
     max_model_len: int = 65536
     lora: LoRAConfig = Field(default_factory=LoRAConfig)
     lmcache: LMCacheInstanceConfig = Field(default_factory=LMCacheInstanceConfig)
-    chat_template: Optional[str] = None   # path to .jinja2 file
+    chat_template: Optional[str] = None
     extra_args: list[str] = Field(default_factory=list)
+    fallbacks: list[str] = Field(default_factory=list)  # ordered fallback instance IDs
 
     @field_validator("port")
     @classmethod
@@ -84,9 +80,7 @@ class InstanceConfig(BaseModel):
     @classmethod
     def validate_gpu_mem(cls, v: float) -> float:
         if not (0.0 < v <= 1.0):
-            raise ValueError(
-                f"gpu_memory_utilization must be in (0.0, 1.0], got {v}"
-            )
+            raise ValueError(f"gpu_memory_utilization must be in (0.0, 1.0], got {v}")
         return v
 
     @field_validator("tensor_parallel_size")
@@ -158,13 +152,25 @@ class TunnelRegistry(BaseModel):
                 )
         return self
 
+    @model_validator(mode="after")
+    def validate_fallback_ids(self) -> "TunnelRegistry":
+        """Ensure every fallback ID references a real registered instance, not itself."""
+        valid_ids = {inst.id for inst in self.instances}
+        for inst in self.instances:
+            unknown = [fb for fb in inst.fallbacks if fb not in valid_ids]
+            if unknown:
+                raise ValueError(
+                    f"Instance '{inst.id}' fallbacks reference unknown IDs: {unknown}"
+                )
+            if inst.id in inst.fallbacks:
+                raise ValueError(
+                    f"Instance '{inst.id}' cannot fall back to itself."
+                )
+        return self
+
     def get_instance(self, instance_id: str) -> Optional[InstanceConfig]:
+        """Return the instance with the given ID, or None."""
         return next((i for i in self.instances if i.id == instance_id), None)
-
-
-# ---------------------------------------------------------------------------
-# Loader
-# ---------------------------------------------------------------------------
 
 
 def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
@@ -179,8 +185,13 @@ def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any
 
 
 def load_registry(path: Path | str = "configs/models.yaml") -> TunnelRegistry:
-    """
-    Load, merge defaults, validate, and return the TunnelRegistry.
+    """Load, merge defaults, validate, and return the TunnelRegistry.
+
+    Args:
+        path: Path to the YAML registry file.
+
+    Returns:
+        Validated TunnelRegistry instance.
 
     Raises:
         FileNotFoundError: if the YAML file doesn't exist.
@@ -188,9 +199,8 @@ def load_registry(path: Path | str = "configs/models.yaml") -> TunnelRegistry:
     """
     raw: dict[str, Any] = yaml.safe_load(Path(path).read_text())
     defaults: dict[str, Any] = raw.pop("defaults", {})
-    merged_instances = [
+    raw["instances"] = [
         _deep_merge(defaults, inst_raw)
         for inst_raw in raw.get("instances", [])
     ]
-    raw["instances"] = merged_instances
     return TunnelRegistry.model_validate(raw)
