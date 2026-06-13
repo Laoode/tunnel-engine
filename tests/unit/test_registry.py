@@ -111,3 +111,32 @@ def test_invalid_routing_strategy_rejected():
             "instances": [_minimal_instance()],
             "litellm": {"port": 4000, "routing_strategy": "round-robin-invalid"},
         }))
+
+def test_valid_fallback_accepted():
+    data = _minimal_registry(
+        _minimal_instance(id="primary", port=8000, fallbacks=["backup"]),
+        _minimal_instance(id="backup", port=8001),
+    )
+    reg = load_registry(_write(data))
+    assert reg.instances[0].fallbacks == ["backup"]
+
+
+def test_fallback_unknown_id_rejected():
+    data = _minimal_registry(
+        _minimal_instance(id="a", port=8000, fallbacks=["does-not-exist"]),
+    )
+    with pytest.raises(Exception, match="unknown IDs"):
+        load_registry(_write(data))
+
+
+def test_fallback_self_reference_rejected():
+    data = _minimal_registry(
+        _minimal_instance(id="a", port=8000, fallbacks=["a"]),
+    )
+    with pytest.raises(Exception, match="itself"):
+        load_registry(_write(data))
+
+
+def test_fallback_defaults_to_empty():
+    reg = load_registry(_write(_minimal_registry(_minimal_instance())))
+    assert reg.instances[0].fallbacks == []

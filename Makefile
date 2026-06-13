@@ -41,10 +41,13 @@ serve: ## Launch a vLLM instance. Usage: make serve ID=qwen-0.8b
 	$(PYTHON) -m tunnel.cli serve $(ID)
 
 test: ## Run the full test suite
-	python3 -m pytest tests/ -v
+	$(PYTHON) -m pytest tests/ -v
 
-test-unit: ## Run unit tests only
-	python3 -m pytest tests/unit/ -v
+test-unit: ## Run unit tests only (fast, no live services required)
+	$(PYTHON) -m pytest tests/unit/ -v
+
+test-integration: ## Run integration tests (requires: make proxy + vLLM instances)
+	$(PYTHON) -m pytest tests/integration/ -v -m integration
 
 lint: ## Lint with ruff
 	ruff check $(LINT_PATHS)
