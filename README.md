@@ -33,3 +33,25 @@ vLLM enables efficient multi-model serving with continuous batching, PagedAttent
 LMCache acts as the extender for vLLM. To store the KV-cache precisely, we need LMCache. It takes the KV-cache from vLLM and saves it to cheaper memory (local RAM or storage, instead of GPU memory only) so it can be reused later. LMCache also supports distributed cache synchronization, allowing multiple vLLM nodes to share caches.
 
 LiteLLM is used for intelligent load balancing. While vLLM runs on multiple separate ports (e.g., ports 8000, 8001, 8002), LiteLLM wraps all of these ports into a single endpoint URL (e.g., port 4000) for all our microservices to call. Additionally, if a model in a specific service crashes (e.g., Out of Memory), we can set up alternative fallback models to handle the requests seamlessly without pausing the service.
+
+Install:
+```bash
+uv pip install -r tunnel-engine/requirements/dev.txt --torch-backend=auto
+```
+
+Running models:
+```bash
+# Instance 1: Qwen 0.8B 
+vllm serve Qwen/Qwen3.5-0.8B \
+  --port 8000 \
+  --tensor-parallel-size 1 \
+  --gpu-memory-utilization 0.35 \
+  --max-model-len 65536 &
+
+# Instance 2: MiniCPM 1B 
+vllm serve openbmb/MiniCPM5-1B \
+  --port 8001 \
+  --tensor-parallel-size 1 \
+  --gpu-memory-utilization 0.45 \
+  --max-model-len 65536 &
+```
