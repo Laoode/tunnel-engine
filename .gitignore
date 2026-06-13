@@ -1,0 +1,61 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+profile_default/
+ipython_config.py
+
+# General
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Virtual environments
+.env
+.venv
+*.log
+.log
+*.pyc
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Database
+*.db
+*.db-shm
+*.db-wal
+*.rdb
+
+# IDE / Editor
+.vscode/
+.idea/
+.triton/
+.lightning_studio/
+.cupy/
+
+# Claude Code (dev-specific)
+.claude/
+CLAUDE.md
+.claudeignore
+.agents/
+AGENTS.md
+
+# Test artifacts
+.coverage
+.pytest_cache/
+
+# Credentials (defense in depth)
+*.pem
+*.key
+
+# Logs
+logs/
+pids/
+
+# Lock file (managed by uv, can regenerate)
+# uv.lock
