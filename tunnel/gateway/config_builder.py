@@ -53,6 +53,11 @@ def build_litellm_config(registry: TunnelRegistry) -> dict:
         "cooldown_time": 60,   # seconds before retrying a cooled-down model
     }
 
+    litellm_settings: dict = {
+        "request_timeout": 120,
+        "drop_params": True,
+    }
+
     # fallbacks: [{primary_id: [fallback_id, ...]}] — only for instances that define one
     fallbacks = [
         {inst.id: inst.fallbacks}
@@ -62,16 +67,18 @@ def build_litellm_config(registry: TunnelRegistry) -> dict:
     if fallbacks:
         router_settings["fallbacks"] = fallbacks
 
+    if registry.litellm.prometheus:
+        # Enables /metrics on the proxy port. Requires: pip install prometheus-client
+        litellm_settings["callbacks"] = ["prometheus"]
+
     return {
         "model_list": model_list,
         "router_settings": router_settings,
         "general_settings": {
             "master_key": registry.litellm.master_key,
         },
-        "litellm_settings": {
-            "request_timeout": 120,
-            "drop_params": True,
-        },
+        "litellm_settings": litellm_settings,
+
     }
 
 
@@ -95,33 +102,3 @@ def write_litellm_config(
         _AUTO_HEADER + yaml.dump(config, default_flow_style=False, sort_keys=False)
     )
     return out
-
-def _make_registry_with_fallbacks() -> TunnelRegistry:
-    return TunnelRegistry.model_validate({
-        "instances": [
-            {"id": "primary", "model": "org/primary", "port": 8000,
-             "gpu_memory_utilization": 0.40, "fallbacks": ["backup"]},
-            {"id": "backup", "model": "org/backup", "port": 8001,
-             "gpu_memory_utilization": 0.40},
-        ],
-        "litellm": {"port": 4000, "master_key": "sk-test",
-                    "routing_strategy": "least-busy"},
-    })
-
-
-def test_fallbacks_emitted_in_router_settings():
-    config = build_litellm_config(_make_registry_with_fallbacks())
-    fallbacks = config["router_settings"]["fallbacks"]
-    assert {"primary": ["backup"]} in fallbacks
-
-
-def test_no_fallbacks_key_when_none_configured():
-    config = build_litellm_config(_make_registry(2))
-    assert "fallbacks" not in config["router_settings"]
-
-
-def test_fallback_only_emitted_for_instances_that_define_one():
-    config = build_litellm_config(_make_registry_with_fallbacks())
-    fallback_keys = [list(f.keys())[0] for f in config["router_settings"]["fallbacks"]]
-    assert "primary" in fallback_keys
-    assert "backup" not in fallback_keys

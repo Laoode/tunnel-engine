@@ -18,3 +18,4 @@ python-dotenv>=1.0
 
 # Observability
 structlog>=24.0
+prometheus-client>=0.20

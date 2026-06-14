@@ -38,3 +38,50 @@ def test_write_creates_file_and_parent_dirs():
         write_litellm_config(_reg(), out)
         assert out.exists()
         assert "AUTO-GENERATED" in out.read_text()
+
+def _make_registry_with_fallbacks() -> TunnelRegistry:
+    return TunnelRegistry.model_validate({
+        "instances": [
+            {"id": "primary", "model": "org/primary", "port": 8000,
+             "gpu_memory_utilization": 0.40, "fallbacks": ["backup"]},
+            {"id": "backup", "model": "org/backup", "port": 8001,
+             "gpu_memory_utilization": 0.40},
+        ],
+        "litellm": {"port": 4000, "master_key": "sk-test",
+                    "routing_strategy": "least-busy"},
+    })
+
+
+def test_fallbacks_emitted_in_router_settings():
+    config = build_litellm_config(_make_registry_with_fallbacks())
+    fallbacks = config["router_settings"]["fallbacks"]
+    assert {"primary": ["backup"]} in fallbacks
+
+
+def test_no_fallbacks_key_when_none_configured():
+    config = build_litellm_config(_reg(2))
+    assert "fallbacks" not in config["router_settings"]
+
+
+def test_fallback_only_emitted_for_instances_that_define_one():
+    config = build_litellm_config(_make_registry_with_fallbacks())
+    fallback_keys = [list(f.keys())[0] for f in config["router_settings"]["fallbacks"]]
+    assert "primary" in fallback_keys
+    assert "backup" not in fallback_keys
+
+
+def test_prometheus_callback_emitted_when_enabled():
+    reg = TunnelRegistry.model_validate({
+        "instances": [
+            {"id": "m", "model": "org/m", "port": 8000, "gpu_memory_utilization": 0.4}
+        ],
+        "litellm": {"port": 4000, "master_key": "sk-test",
+                    "routing_strategy": "least-busy", "prometheus": True},
+    })
+    config = build_litellm_config(reg)
+    assert "prometheus" in config["litellm_settings"].get("callbacks", [])
+
+
+def test_prometheus_callback_absent_when_disabled():
+    config = build_litellm_config(_reg(1))
+    assert "callbacks" not in config["litellm_settings"]

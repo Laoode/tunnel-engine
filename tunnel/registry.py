@@ -103,6 +103,7 @@ class LiteLLMGatewayConfig(BaseModel):
     port: int = 4000
     master_key: str = "sk-tunnel-dev-change-in-prod"
     routing_strategy: str = "least-busy"
+    prometheus: bool = False  # enable /metrics endpoint (requires prometheus-client)
 
     @field_validator("routing_strategy")
     @classmethod

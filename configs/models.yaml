@@ -8,9 +8,7 @@
 # To remove a model: delete the block, run `make generate`.
 # =============================================================================
 
-# ---------------------------------------------------------------------------
 # Defaults — merged into every instance. Instance-level values always win.
-# ---------------------------------------------------------------------------
 defaults:
   tensor_parallel_size: 1
   dtype: "auto"
@@ -25,9 +23,7 @@ defaults:
     chunk_size: 256
   extra_args: []
 
-# ---------------------------------------------------------------------------
 # Instances
-# ---------------------------------------------------------------------------
 instances:
   - id: qwen-0.8b
     model: Qwen/Qwen3.5-0.8B
@@ -80,6 +76,7 @@ litellm:
   port: 4000
   master_key: "sk-tunnel-dev-change-in-prod"
   routing_strategy: least-busy
+  prometheus: false  # set to true to expose /metrics (requires prometheus-client)
 
 lmcache:
   backend: cpu
