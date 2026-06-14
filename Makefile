@@ -1,6 +1,7 @@
 PYTHON      := python3
 REGISTRY    := configs/models.yaml
 LINT_PATHS  := tunnel/ tests/
+HF_CACHE    := ~/.cache/huggingface/hub/
 
 .DEFAULT_GOAL := help
 
@@ -70,3 +71,24 @@ install: ## Install dependency
 
 kill:
 	pkill -f vllm
+
+view-models: ## List all cached models
+	@echo "Cached models:"
+	@ls -d $(HF_CACHE)/models--* 2>/dev/null | xargs -n1 basename || echo "None found."
+
+delete-model: ## Delete a specific model. Usage: make delete-model NAME=models--Qwen--Qwen3.5-0.8B
+ifndef NAME
+	$(error NAME is required. Usage: make delete-model NAME=models--...)
+endif
+	@if [ ! -d "$(HF_CACHE)/$(NAME)" ]; then \
+		echo "Error: Model '$(NAME)' not found."; \
+		exit 1; \
+	fi
+	@echo "Removing: $(HF_CACHE)/$(NAME)"
+	@rm -rf "$(HF_CACHE)/$(NAME)"
+	@echo "Done."
+
+delete-all-models: ## Delete all cached models. Usage: make delete-all-models
+	@echo "Warning: Deleting all models in $(HF_CACHE)..."
+	@rm -rf $(HF_CACHE)/models--*
+	@echo "Done."
