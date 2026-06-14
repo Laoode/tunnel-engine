@@ -29,8 +29,12 @@ list: ## List all registered model instances
 health: ## Poll health of all vLLM instances
 	$(PYTHON) -m tunnel.cli health
 
-proxy: ## Start the LiteLLM proxy (run `make generate` first)
-	$(PYTHON) -m tunnel.cli proxy
+start: ## Health-gate + proxy: wait for all vLLM instances, then launch proxy
+	$(PYTHON) -m tunnel.cli start
+
+start-timeout: ## Same as start with custom timeout. Usage: make start-timeout TIMEOUT=120
+	@if [ -z "$(TIMEOUT)" ]; then echo "Usage: make start-timeout TIMEOUT=<seconds>"; exit 1; fi
+	$(PYTHON) -m tunnel.cli start --timeout $(TIMEOUT)
 
 serve: ## Launch a vLLM instance. Usage: make serve ID=qwen-0.8b
 	@if [ -z "$(ID)" ]; then \
@@ -60,3 +64,9 @@ fmt-check: ## Check formatting without writing (CI-safe)
 
 tree: ## Show project tree, excluding common noise
 	tree -I '__pycache__|*.pyc|.pytest_cache|.git|.venv|venv|dist|build'
+
+install: ## Install dependency
+	uv pip install -r requirements/dev.txt --torch-backend=auto
+
+kill:
+	pkill -f vllm

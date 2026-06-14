@@ -9,15 +9,18 @@ Usage:
   python -m tunnel.cli generate                Rebuild all derived configs
   python -m tunnel.cli list                    List registered instances
   python -m tunnel.cli proxy                   Start the LiteLLM proxy
+  python -m tunnel.cli start                   Wait for instances, then start proxy
 
 Or via Makefile:
   make serve ID=qwen-0.8b
   make health
   make generate
   make proxy
+  make start
 """
 from __future__ import annotations
 
+import argparse
 import asyncio
 import os
 import sys
@@ -26,7 +29,9 @@ from pathlib import Path
 from tunnel.cache.lmcache_config import write_lmcache_configs
 from tunnel.gateway.config_builder import write_litellm_config
 from tunnel.health.checker import check_all, collect_gpu_stats, format_report
+from tunnel.logging import configure_logging
 from tunnel.registry import load_registry
+from tunnel.startup import DEFAULT_TIMEOUT_S, wait_for_all
 
 REGISTRY_PATH = "configs/models.yaml"
 LITELLM_CONFIG = "configs/litellm/config.yaml"
@@ -129,7 +134,8 @@ def cmd_generate() -> None:
         flag_str = f"  [{', '.join(flags)}]" if flags else ""
         print(f"  . {inst.id:<24}  :{inst.port}  {inst.model}{flag_str}")
 
-    print(f"\n  LiteLLM proxy will listen on :{registry.litellm.port}")
+    prom = " [prometheus: on]" if registry.litellm.prometheus else ""
+    print(f"\n  LiteLLM proxy -> :{registry.litellm.port}{prom}")
 
 
 def cmd_list() -> None:
@@ -169,12 +175,49 @@ def cmd_proxy() -> None:
     os.execvpe(cmd[0], cmd, os.environ.copy())
 
 
+def cmd_start(args: list[str]) -> None:
+    """Wait for all vLLM instances to become healthy, then exec the LiteLLM proxy.
+
+    Prevents the LiteLLM startup-cooldown failure: if LiteLLM starts before vLLM
+    finishes loading (~30-120s), it marks models as failed and enters 60s cooldown.
+    This blocks until all instances are healthy, then hands off to cmd_proxy.
+
+    Args:
+        args: Optional ["--timeout", "<seconds>"].
+    """
+    parser = argparse.ArgumentParser(prog="tunnel start")
+    parser.add_argument(
+        "--timeout", type=float, default=DEFAULT_TIMEOUT_S,
+        help=f"Per-instance health wait timeout in seconds (default: {DEFAULT_TIMEOUT_S})",
+    )
+    parsed = parser.parse_args(args)
+
+    registry = load_registry(REGISTRY_PATH)
+    result = asyncio.run(wait_for_all(registry, timeout_s=parsed.timeout))
+
+    if not result.ready:
+        print(
+            f"ERROR: {len(result.failed_instances)} instance(s) did not become healthy "
+            f"within {parsed.timeout}s: {result.failed_instances}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    print(
+        f"All {len(registry.instances)} instance(s) healthy "
+        f"after {result.elapsed_s}s. Starting proxy...",
+        file=sys.stderr,
+    )
+    cmd_proxy()  # exec()s into LiteLLM — no return
+
+
 _COMMANDS = {
     "serve":    lambda args: cmd_serve(args[0] if args else _die("serve requires <instance-id>")),
     "health":   lambda _: cmd_health(),
     "generate": lambda _: cmd_generate(),
     "list":     lambda _: cmd_list(),
     "proxy":    lambda _: cmd_proxy(),
+    "start":    lambda args: cmd_start(args),
 }
 
 
@@ -184,6 +227,7 @@ def _die(msg: str) -> None:
 
 
 def main() -> None:
+    configure_logging(level=os.getenv("TUNNEL_LOG_LEVEL", "INFO"))
     if len(sys.argv) < 2 or sys.argv[1] not in _COMMANDS:
         print(__doc__, file=sys.stderr)
         print(f"Available: {list(_COMMANDS)}", file=sys.stderr)
