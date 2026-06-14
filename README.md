@@ -68,7 +68,7 @@ uv pip install -r tunnel-engine/requirements/dev.txt --torch-backend=auto
 # uv pip uninstall -r tunnel-engine/requirements/dev.txt -y
 ```
 
-Running models:
+Running models manual via vLLM:
 ```bash
 # Instance 1: Qwen 0.8B 
 vllm serve Qwen/Qwen3.5-0.8B \
@@ -95,4 +95,14 @@ make generate
 
 # Verify both instances (already running)
 make health
+
+# Running models (vLLM+LMCache)
+make serve ID=qwen-0.8b
+make serve ID=minicpm-1b
+
+# Start LiteLLM
+make start
+
+# Test full
+make test
 ```
