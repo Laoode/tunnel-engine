@@ -76,7 +76,7 @@ litellm:
   port: 4000
   master_key: "sk-tunnel-dev-change-in-prod"
   routing_strategy: least-busy
-  prometheus: false  # set to true to expose /metrics (requires prometheus-client)
+  prometheus: true  # set to true to expose /metrics grafana dashboard
 
 lmcache:
   backend: cpu

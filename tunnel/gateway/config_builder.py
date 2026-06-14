@@ -56,6 +56,7 @@ def build_litellm_config(registry: TunnelRegistry) -> dict:
     litellm_settings: dict = {
         "request_timeout": 120,
         "drop_params": True,
+        "require_auth_for_metrics_endpoint": False,
     }
 
     # fallbacks: [{primary_id: [fallback_id, ...]}] — only for instances that define one
