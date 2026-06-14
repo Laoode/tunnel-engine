@@ -93,12 +93,12 @@ make check
 # Generate derived configs (LiteLLM + LMCache yamls)
 make generate
 
-# Verify both instances (already running)
-make health
-
 # Running models (vLLM+LMCache)
 make serve ID=qwen-0.8b
 make serve ID=minicpm-1b
+
+# Verify both instances (already running)
+make health
 
 # Start LiteLLM
 make start
