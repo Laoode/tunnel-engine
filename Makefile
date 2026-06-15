@@ -69,6 +69,9 @@ tree: ## Show project tree, excluding common noise
 install: ## Install dependency
 	uv pip install -r requirements/dev.txt --torch-backend=auto
 
+uninstall: ## Uninstall dependency
+	uv pip uninstall -r tunnel-engine/requirements/dev.txt -y
+
 kill:
 	pkill -f vllm
 

@@ -88,13 +88,6 @@ Architecture (what we need):
 
 ```
     
-Install:
-```bash
-uv pip install -r tunnel-engine/requirements/dev.txt --torch-backend=auto
-# Uninstall
-# uv pip uninstall -r tunnel-engine/requirements/dev.txt -y
-```
-
 Running models manual via vLLM:
 ```bash
 # Instance 1: Qwen 0.8B 
@@ -114,6 +107,9 @@ vllm serve openbmb/MiniCPM5-1B \
 
 Makefile:
 ```bash
+# Install all dependency
+make install
+
 # Validate the registry parses correctly
 make check
 
