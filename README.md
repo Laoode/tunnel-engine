@@ -15,12 +15,17 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/Python-3.12.11-3776AB?logo=python&logoColor=yellow" />
+  <img src="https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=yellow" />
   <img src="https://img.shields.io/badge/CUDA-13.0-76B900?logo=nvidia&logoColor=green" />
-  <img src="https://img.shields.io/badge/vLLM-Model%20Serving-4add9c" />
+  <img src="https://img.shields.io/badge/vLLM-Model%20Serving-30a2ff" />
   <img src="https://img.shields.io/badge/LMCache-Global%20Cache-599aac" />
   <img src="https://img.shields.io/badge/LiteLLM-Orchestration-white" />
+  <img src="https://img.shields.io/badge/NeMo_Guardrails-AI_Safety-76B900?logo=nvidia" />
+  <img src="https://img.shields.io/badge/APISIX-Edge_Gateway-e8433f?logo=apacheapisix&logoColor=white" />
+  <img src="https://img.shields.io/badge/Kubernetes-Service_Mesh-326CE5?logo=kubernetes&logoColor=white" />
+  <img src="https://img.shields.io/badge/KEDA-Autoscaling-FF4500?logo=keda&logoColor=white" />
   <img src="https://img.shields.io/badge/Redis-Distributed%20Cache-DC382D?logo=redis&logoColor=red" />
+  <img src="https://img.shields.io/badge/MinIO-Model_Storage-darkred?logo=minio&logoColor=darkred" />
   <img src="https://img.shields.io/badge/Prometheus-Metrics-E6522C?logo=prometheus&logoColor=orange" />
   <img src="https://img.shields.io/badge/Grafana-Observability-F46800?logo=grafana&logoColor=orange" />
   <img src="https://img.shields.io/badge/Docker-Containerized-2496ED?logo=docker&logoColor=blue" />
@@ -48,21 +53,37 @@ LiteLLM is used for intelligent load balancing. While vLLM runs on multiple sepa
 
 Architecture (what we need):
 ```
+   Our services        ┌───────────────────────────┐
+   call this     ────▶ │   Apache APISIX Gateway   │  ← Edge TLS, Global API Key Auth, WAF
+                       └─────────────┬─────────────┘
+                                     │ (Internal VPC)
+                                     ▼
+                        ┌───────────────────────────┐  
+   Rate limiting ────▶  │    LiteLLM Proxy :4000    │ ──(Tracks Latency/Token Counts)  ────▶  [ Prometheus ]
+                        │ (Routing / Load-Balancer) │                                                ▲
+                        └─────────────┬─────────────┘                                                │
+                        ▲             │(Calls Hook)                                                  │
+      (Checks/Sanitizes)│   ┌─────────▼─────────┐                                                    │
+                        └───│  NeMo Guardrails  │  ← Async or synchronous validation block           │
+                            └─────────┬─────────┘                                                    │
+                                      │ (Validated request)                                          │
+                        ┌─────────────▼─────────────┐                                                │
+                        │  Kubernetes Service Mesh  │  ← K8s Load Balancer    | [Optional rn]        │
+                        └─────────────┬─────────────┘                                                │
+                                      │                                                              │
+                    ┌─────────────────▼─────────────────┐                                            │
+                    │                                   │                                            │
+       ┌────────────▼──────────┐             ┌──────────▼────────────┐                               │
+       │   vLLM Pod 1 :8000    │             │   vLLM Pod 2 :8001    │ ← Autoscaled via KEDA         │
+       │    (Model A v2)       │             │     (Model A v2)      │ ──(vllm:num_requests_waiting)─┘
+       └────────────┬──────────┘             └──────────┬────────────┘
+                    │                                   │
+                    └─────────────────┬─────────────────┘
+                                      ▼
                     ┌───────────────────────────────────┐
-   Our services     │        LiteLLM Proxy :4000        │  ← single unified endpoint
-   call this  ────▶ │  routing · fallback · balancing   │
-                    └────────────┬────────────┬─────────┘
-                                 │            │
-                    ┌────────────▼──┐  ┌──────▼────────────┐
-                    │  vLLM :8000   │  │   vLLM :8001      │
-                    │  + LMCache    │  │   + LMCache       │
-                    │  model-A      │  │   model-B         │
-                    └───────────────┘  └───────────────────┘
-                           │                    │
-                    ┌──────▼────────────────────▼────────┐
-                    │        RAM KV-Cache Store          │
-                    │  (LMCache local, upgrades to Redis)│
-                    └────────────────────────────────────┘
+                    │      LMCache + Distributed Redis  │  ← Ultra-low TTFT across pods
+                    └───────────────────────────────────┘
+
 ```
 
 Install:
