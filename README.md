@@ -70,12 +70,14 @@ Architecture (what we need):
                         ┌─────────────▼─────────────┐                                                │
                         │  Kubernetes Service Mesh  │  ← K8s Load Balancer    | [Optional rn]        │
                         └─────────────┬─────────────┘                                                │
-                                      │                                                              │
-                    ┌─────────────────▼─────────────────┐                                            │
-                    │                                   │                                            │
-       ┌────────────▼──────────┐             ┌──────────▼────────────┐                               │
-       │   vLLM Pod 1 :8000    │             │   vLLM Pod 2 :8001    │ ← Autoscaled via KEDA         │
-       │    (Model A v2)       │             │     (Model A v2)      │ ──(vllm:num_requests_waiting)─┘
+┌─────────────────────┐               │                                                              │
+│ MinIO Model Storage │               │                                                              │
+└───▲─────────────────┘               │                                                              │
+    |               ┌─────────────────▼─────────────────┐                                            │
+    |               │                                   │                                            │
+    |  ┌────────────▼──────────┐             ┌──────────▼────────────┐                               │
+    |  │   vLLM Pod 1 :8000    │             │   vLLM Pod 2 :8001    │ ← Autoscaled via KEDA         │
+    └─ │    (Model A v2)       │             │     (Model A v2)      │ ──(vllm:num_requests_waiting)─┘
        └────────────┬──────────┘             └──────────┬────────────┘
                     │                                   │
                     └─────────────────┬─────────────────┘
@@ -85,7 +87,7 @@ Architecture (what we need):
                     └───────────────────────────────────┘
 
 ```
-
+    
 Install:
 ```bash
 uv pip install -r tunnel-engine/requirements/dev.txt --torch-backend=auto
