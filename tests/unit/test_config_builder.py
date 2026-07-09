@@ -1,7 +1,5 @@
 import tempfile
 from pathlib import Path
-import pytest
-import yaml
 from tunnel.registry import TunnelRegistry
 from tunnel.gateway.config_builder import build_litellm_config, write_litellm_config
 
@@ -9,7 +7,7 @@ from tunnel.gateway.config_builder import build_litellm_config, write_litellm_co
 def _reg(n=2):
     return TunnelRegistry.model_validate({"instances": [
         {"id": f"model-{i}", "model": f"org/model-{i}",
-         "port": 8000+i, "gpu_memory_utilization": 0.40}
+         "port": 8000+i, "gpu_memory_utilization": 0.10}
         for i in range(n)
     ], "litellm": {"port": 4000, "master_key": "sk-test",
                    "routing_strategy": "least-busy"}})
@@ -85,3 +83,21 @@ def test_prometheus_callback_emitted_when_enabled():
 def test_prometheus_callback_absent_when_disabled():
     config = build_litellm_config(_reg(1))
     assert "callbacks" not in config["litellm_settings"]
+
+
+def test_served_model_name_used_when_set():
+    reg = TunnelRegistry.model_validate({
+        "instances": [
+            {"id": "m", "model": "org/m", "port": 8000, "gpu_memory_utilization": 0.4,
+             "served_model_name": "custom-name"},
+        ],
+        "litellm": {"port": 4000, "master_key": "sk-test",
+                    "routing_strategy": "least-busy"},
+    })
+    config = build_litellm_config(reg)
+    assert config["model_list"][0]["litellm_params"]["model"] == "openai/custom-name"
+
+
+def test_served_model_name_unset_falls_back_to_model():
+    cfg = build_litellm_config(_reg(1))
+    assert cfg["model_list"][0]["litellm_params"]["model"] == "openai/org/model-0"

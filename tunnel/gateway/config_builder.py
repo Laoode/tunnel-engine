@@ -37,7 +37,7 @@ def build_litellm_config(registry: TunnelRegistry) -> dict:
         {
             "model_name": inst.id,
             "litellm_params": {
-                "model": f"openai/{inst.model}",
+                "model": f"openai/{inst.served_model_name or inst.model}",
                 "api_base": inst.api_base,
                 "api_key": "none",
             },
