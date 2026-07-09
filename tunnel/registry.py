@@ -62,12 +62,18 @@ class InstanceConfig(BaseModel):
     description: str = ""
     tensor_parallel_size: int = 1
     dtype: str = "auto"
-    max_model_len: int = 65536
+    attention_backend: Optional[str] = None
+    max_model_len: Optional[int] = None
     lora: LoRAConfig = Field(default_factory=LoRAConfig)
     lmcache: LMCacheInstanceConfig = Field(default_factory=LMCacheInstanceConfig)
     chat_template: Optional[str] = None
     extra_args: list[str] = Field(default_factory=list)
     fallbacks: list[str] = Field(default_factory=list)  # ordered fallback instance IDs
+    tool_parser: Optional[str] = None
+    reasoning_parser: Optional[str] = None
+    quantization: Optional[str] = None
+    served_model_name: Optional[str] = None
+    enable_thinking: bool = False
 
     @field_validator("port")
     @classmethod
@@ -99,9 +105,20 @@ class InstanceConfig(BaseModel):
         return f"http://localhost:{self.port}/health"
 
 
+class GPUConfig(BaseModel):
+    budget: float = 0.90  # max allowed sum of instance gpu_memory_utilization
+
+    @field_validator("budget")
+    @classmethod
+    def validate_budget(cls, v: float) -> float:
+        if not (0.0 < v <= 1.0):
+            raise ValueError(f"gpu.budget must be in (0.0, 1.0], got {v}")
+        return v
+
+
 class LiteLLMGatewayConfig(BaseModel):
     port: int = 4000
-    master_key: str = "sk-tunnel-dev-change-in-prod"
+    master_key: Optional[str] = None
     routing_strategy: str = "least-busy"
     prometheus: bool = False  # enable /metrics endpoint (requires prometheus-client)
 
@@ -126,6 +143,7 @@ class TunnelRegistry(BaseModel):
     instances: list[InstanceConfig]
     litellm: LiteLLMGatewayConfig = Field(default_factory=LiteLLMGatewayConfig)
     lmcache: GlobalLMCacheConfig = Field(default_factory=GlobalLMCacheConfig)
+    gpu: GPUConfig = Field(default_factory=GPUConfig)
 
     @model_validator(mode="after")
     def validate_no_port_collisions(self) -> "TunnelRegistry":
@@ -167,6 +185,20 @@ class TunnelRegistry(BaseModel):
                 raise ValueError(
                     f"Instance '{inst.id}' cannot fall back to itself."
                 )
+        return self
+
+    @model_validator(mode="after")
+    def validate_gpu_budget(self) -> "TunnelRegistry":
+        """Naive sum of gpu_memory_utilization across instances; assumes a single GPU, TP=1."""
+        total = sum(inst.gpu_memory_utilization for inst in self.instances)
+        if total > self.gpu.budget:
+            terms = " + ".join(
+                f"{inst.id}={inst.gpu_memory_utilization}" for inst in self.instances
+            )
+            raise ValueError(
+                f"GPU memory over budget: {terms} = {total:.2f} > budget {self.gpu.budget:.2f}. "
+                "Reduce gpu_memory_utilization or raise gpu.budget in models.yaml."
+            )
         return self
 
     def get_instance(self, instance_id: str) -> Optional[InstanceConfig]:

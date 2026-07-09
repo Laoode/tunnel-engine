@@ -10,6 +10,8 @@ Usage:
   python -m tunnel.cli list                    List registered instances
   python -m tunnel.cli proxy                   Start the LiteLLM proxy
   python -m tunnel.cli start                   Wait for instances, then start proxy
+  python -m tunnel.cli up                      Launch all instances, health-gate, start proxy
+  python -m tunnel.cli down                    Stop all tracked vLLM instances
 
 Or via Makefile:
   make serve ID=qwen-0.8b
@@ -17,24 +19,82 @@ Or via Makefile:
   make generate
   make proxy
   make start
+  make up
+  make down
 """
 from __future__ import annotations
 
 import argparse
 import asyncio
+from math import e
 import os
 import sys
+import json
 from pathlib import Path
 
 from tunnel.cache.lmcache_config import write_lmcache_configs
 from tunnel.gateway.config_builder import write_litellm_config
 from tunnel.health.checker import check_all, collect_gpu_stats, format_report
 from tunnel.logging import configure_logging
-from tunnel.registry import load_registry
+from tunnel.orchestrator import is_alive, launch_instance, read_pid, stop_instance
+from tunnel.registry import InstanceConfig, load_registry
 from tunnel.startup import DEFAULT_TIMEOUT_S, wait_for_all
 
 REGISTRY_PATH = "configs/models.yaml"
 LITELLM_CONFIG = "configs/litellm/config.yaml"
+
+
+def build_serve_command(inst: InstanceConfig) -> list[str]:
+    """Build the `vllm serve` argv for an instance.
+
+    Pure function: no printing, no env handling. The only I/O is a
+    `Path.exists()` check on `chat_template` so the flag is omitted (rather
+    than passed as a broken path) when the file is missing — callers that
+    want a WARN for that case should check existence themselves before
+    calling this.
+
+    Args:
+        inst: Validated InstanceConfig.
+
+    Returns:
+        Full argv list for `os.execvpe`.
+    """
+    cmd = [
+        "vllm", "serve", inst.model,
+        "--port",                    str(inst.port),
+        "--tensor-parallel-size",    str(inst.tensor_parallel_size),
+        "--gpu-memory-utilization",  str(inst.gpu_memory_utilization),
+        "--max-model-len",           str(inst.max_model_len),
+        "--dtype",                   inst.dtype,
+        "--default-chat-template-kwargs", json.dumps({"enable_thinking": inst.enable_thinking})
+    ]
+
+    if inst.lora.enabled:
+        cmd.append("--enable-lora")
+        for module in inst.lora.modules:
+            cmd += ["--lora-modules", f"{module.name}={module.path}"]
+
+    if inst.attention_backend:
+        cmd += ["--attention-backend", inst.attention_backend]
+
+    if inst.chat_template and Path(inst.chat_template).exists():
+        cmd += ["--chat-template", str(Path(inst.chat_template))]
+
+    if inst.quantization:
+        cmd += ["--quantization", inst.quantization]
+
+    if inst.served_model_name:
+        cmd += ["--served-model-name", inst.served_model_name]
+
+    if inst.tool_parser:
+        cmd += ["--enable-auto-tool-choice", "--tool-call-parser", inst.tool_parser]
+
+    if inst.reasoning_parser:
+        cmd += ["--reasoning-parser", inst.reasoning_parser]
+
+    cmd.extend(inst.extra_args)
+
+    return cmd
 
 
 def cmd_serve(instance_id: str) -> None:
@@ -56,32 +116,14 @@ def cmd_serve(instance_id: str) -> None:
         )
         sys.exit(1)
 
-    cmd = [
-        "vllm", "serve", inst.model,
-        "--port",                    str(inst.port),
-        "--tensor-parallel-size",    str(inst.tensor_parallel_size),
-        "--gpu-memory-utilization",  str(inst.gpu_memory_utilization),
-        "--max-model-len",           str(inst.max_model_len),
-        "--dtype",                   inst.dtype,
-    ]
+    if inst.chat_template and not Path(inst.chat_template).exists():
+        print(
+            f"WARN: chat_template '{inst.chat_template}' not found — "
+            "model will use its default template.",
+            file=sys.stderr,
+        )
 
-    if inst.lora.enabled:
-        cmd.append("--enable-lora")
-        for module in inst.lora.modules:
-            cmd += ["--lora-modules", f"{module.name}={module.path}"]
-
-    if inst.chat_template:
-        template_path = Path(inst.chat_template)
-        if not template_path.exists():
-            print(
-                f"WARN: chat_template '{inst.chat_template}' not found — "
-                "model will use its default template.",
-                file=sys.stderr,
-            )
-        else:
-            cmd += ["--chat-template", str(template_path)]
-
-    cmd.extend(inst.extra_args)
+    cmd = build_serve_command(inst)
 
     env = os.environ.copy()
     if inst.lmcache.enabled:
@@ -131,6 +173,10 @@ def cmd_generate() -> None:
             flags.append(f"TP={inst.tensor_parallel_size}")
         if inst.fallbacks:
             flags.append(f"fallback->{inst.fallbacks}")
+        if inst.quantization:
+            flags.append(f"quant:{inst.quantization}")
+        if inst.tool_parser:
+            flags.append(f"tools:{inst.tool_parser}")
         flag_str = f"  [{', '.join(flags)}]" if flags else ""
         print(f"  . {inst.id:<24}  :{inst.port}  {inst.model}{flag_str}")
 
@@ -211,6 +257,67 @@ def cmd_start(args: list[str]) -> None:
     cmd_proxy()  # exec()s into LiteLLM — no return
 
 
+def cmd_up(args: list[str]) -> None:
+    """Launch every registered instance in the background, health-gate, then exec the proxy.
+
+    Skips instances that already have a live tracked pid. Instances that fail to
+    become healthy within the timeout are left running (they may still be
+    loading) — the user decides whether to wait longer or investigate the log.
+
+    Args:
+        args: Optional ["--timeout", "<seconds>"].
+    """
+    parser = argparse.ArgumentParser(prog="tunnel up")
+    parser.add_argument(
+        "--timeout", type=float, default=DEFAULT_TIMEOUT_S,
+        help=f"Per-instance health wait timeout in seconds (default: {DEFAULT_TIMEOUT_S})",
+    )
+    parsed = parser.parse_args(args)
+
+    registry = load_registry(REGISTRY_PATH)
+
+    for inst in registry.instances:
+        pid = read_pid(inst.id)
+        if pid is not None and is_alive(pid):
+            print(f".  {inst.id}  already running (pid {pid})", file=sys.stderr)
+            continue
+        pid = launch_instance(inst)
+        print(f".  {inst.id}  launched (pid {pid}) -> logs/{inst.id}.log", file=sys.stderr)
+
+    result = asyncio.run(wait_for_all(registry, timeout_s=parsed.timeout))
+
+    if not result.ready:
+        print(
+            f"ERROR: {len(result.failed_instances)} instance(s) did not become healthy "
+            f"within {parsed.timeout}s: {result.failed_instances}\n"
+            f"  Check logs/<id>.log for the failing instance(s).",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    print(
+        f"All {len(registry.instances)} instance(s) healthy "
+        f"after {result.elapsed_s}s. Starting proxy...",
+        file=sys.stderr,
+    )
+    cmd_proxy()  # exec()s into LiteLLM — no return
+
+
+def cmd_down(_: list[str]) -> None:
+    """Stop every tracked vLLM instance cleanly (SIGTERM, then SIGKILL if needed)."""
+    registry = load_registry(REGISTRY_PATH)
+
+    for inst in registry.instances:
+        outcome = stop_instance(inst.id)
+        print(f".  {inst.id}  {outcome}", file=sys.stderr)
+
+    print(
+        "\nNote: the LiteLLM proxy is not tracked by pidfiles — if it's running "
+        "in another terminal, Ctrl-C it there.",
+        file=sys.stderr,
+    )
+
+
 _COMMANDS = {
     "serve":    lambda args: cmd_serve(args[0] if args else _die("serve requires <instance-id>")),
     "health":   lambda _: cmd_health(),
@@ -218,6 +325,8 @@ _COMMANDS = {
     "list":     lambda _: cmd_list(),
     "proxy":    lambda _: cmd_proxy(),
     "start":    lambda args: cmd_start(args),
+    "up":       lambda args: cmd_up(args),
+    "down":     lambda args: cmd_down(args),
 }
 
 
