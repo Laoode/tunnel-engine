@@ -38,12 +38,14 @@ venv.bak/
 .lightning_studio/
 .cupy/
 
-# Claude Code (dev-specific)
+# Claude Code Artifacts
 .claude/
-CLAUDE.md
 .claudeignore
 .agents/
 AGENTS.md
+CLAUDE.md
+MEMORY.md
+docs/
 
 # Test artifacts
 .coverage
@@ -56,6 +58,7 @@ AGENTS.md
 # Logs
 logs/
 pids/
+.tunnel/
 
 # Lock file (managed by uv, can regenerate)
 # uv.lock

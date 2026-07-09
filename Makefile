@@ -5,7 +5,7 @@ HF_CACHE    := ~/.cache/huggingface/hub/
 
 .DEFAULT_GOAL := help
 
-.PHONY: help generate list health proxy serve test lint fmt check
+.PHONY: help generate list health proxy serve test lint fmt check up down
 
 help:
 	@echo ""
@@ -36,6 +36,16 @@ start: ## Health-gate + proxy: wait for all vLLM instances, then launch proxy
 start-timeout: ## Same as start with custom timeout. Usage: make start-timeout TIMEOUT=120
 	@if [ -z "$(TIMEOUT)" ]; then echo "Usage: make start-timeout TIMEOUT=<seconds>"; exit 1; fi
 	$(PYTHON) -m tunnel.cli start --timeout $(TIMEOUT)
+
+up: ## Launch ALL instances in background, health-gate, then start proxy
+	$(PYTHON) -m tunnel.cli up
+
+up-timeout: ## Same as up with custom timeout. Usage: make up-timeout TIMEOUT=120
+	@if [ -z "$(TIMEOUT)" ]; then echo "Usage: make up-timeout TIMEOUT=<seconds>"; exit 1; fi
+	$(PYTHON) -m tunnel.cli up --timeout $(TIMEOUT)
+
+down: ## Stop all tracked vLLM instances cleanly
+	$(PYTHON) -m tunnel.cli down
 
 serve: ## Launch a vLLM instance. Usage: make serve ID=qwen-0.8b
 	@if [ -z "$(ID)" ]; then \

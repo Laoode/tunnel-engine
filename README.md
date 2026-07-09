@@ -7,7 +7,7 @@
 </div>
 
 <p align="center">
-  <b>LLM inference is fundamentally different. Standard backend logic won't cut it.</b>
+  <b>📟 LLM inference is fundamentally different. Standard backend logic won't cut it.</b>
 </p>
 
 <p align="center">
