@@ -1,5 +1,4 @@
 import tempfile
-import yaml
 from tunnel.registry import TunnelRegistry
 from tunnel.cache.lmcache_config import build_lmcache_config, write_lmcache_configs
 

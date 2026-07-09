@@ -140,3 +140,59 @@ def test_fallback_self_reference_rejected():
 def test_fallback_defaults_to_empty():
     reg = load_registry(_write(_minimal_registry(_minimal_instance())))
     assert reg.instances[0].fallbacks == []
+
+
+# New per-instance fields
+def test_new_instance_fields_default_to_none():
+    reg = load_registry(_write(_minimal_registry(_minimal_instance())))
+    inst = reg.instances[0]
+    assert inst.tool_parser is None
+    assert inst.reasoning_parser is None
+    assert inst.quantization is None
+    assert inst.served_model_name is None
+
+
+def test_new_instance_fields_round_trip_when_set():
+    data = _minimal_registry(_minimal_instance(
+        tool_parser="hermes",
+        reasoning_parser="qwen3",
+        quantization="fp8",
+        served_model_name="my-model",
+    ))
+    reg = load_registry(_write(data))
+    inst = reg.instances[0]
+    assert inst.tool_parser == "hermes"
+    assert inst.reasoning_parser == "qwen3"
+    assert inst.quantization == "fp8"
+    assert inst.served_model_name == "my-model"
+
+
+# GPU budget validation
+def test_gpu_budget_valid_sum_passes():
+    data = _minimal_registry(
+        _minimal_instance(id="a", port=8000, gpu_memory_utilization=0.35),
+        _minimal_instance(id="b", port=8001, gpu_memory_utilization=0.45),
+    )
+    reg = load_registry(_write(data))
+    assert reg.gpu.budget == 0.90
+
+
+def test_gpu_budget_over_budget_rejected_with_instance_ids():
+    data = _minimal_registry(
+        _minimal_instance(id="qwen-0.8b", port=8000, gpu_memory_utilization=0.35),
+        _minimal_instance(id="minicpm-1b", port=8001, gpu_memory_utilization=0.45),
+        _minimal_instance(id="big", port=8002, gpu_memory_utilization=0.30),
+    )
+    with pytest.raises(Exception, match="qwen-0.8b=0.35"):
+        load_registry(_write(data))
+
+
+def test_gpu_budget_out_of_range_rejected():
+    data = {**_minimal_registry(_minimal_instance()), "gpu": {"budget": 1.5}}
+    with pytest.raises(Exception, match="gpu.budget"):
+        load_registry(_write(data))
+
+
+def test_gpu_budget_defaults_when_block_absent():
+    reg = load_registry(_write(_minimal_registry(_minimal_instance())))
+    assert reg.gpu.budget == 0.90

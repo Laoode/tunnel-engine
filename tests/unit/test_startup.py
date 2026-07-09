@@ -24,7 +24,7 @@ def _make_registry(n: int = 2) -> TunnelRegistry:
                 "id": f"m{i}",
                 "model": f"org/m{i}",
                 "port": 8000 + i,
-                "gpu_memory_utilization": 0.4,
+                "gpu_memory_utilization": 0.1,
             }
             for i in range(n)
         ]
