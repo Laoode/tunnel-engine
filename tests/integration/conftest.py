@@ -8,6 +8,15 @@ import httpx
 
 from tunnel.registry import TunnelRegistry, load_registry
 
+# Load .env so LITELLM_MASTER_KEY (referenced as os.environ/... in the registry)
+# is available to resolve the proxy auth key. No-op if python-dotenv is absent.
+try:
+    from dotenv import load_dotenv
+
+    load_dotenv()
+except ImportError:
+    pass
+
 
 @pytest.fixture(scope="session")
 def registry() -> TunnelRegistry:
@@ -22,7 +31,7 @@ def proxy_url(registry: TunnelRegistry) -> str:
 
 @pytest.fixture(scope="session")
 def auth_headers(registry: TunnelRegistry) -> dict[str, str]:
-    return {"Authorization": f"Bearer {registry.litellm.master_key}"}
+    return {"Authorization": f"Bearer {registry.litellm.resolved_master_key}"}
 
 
 @pytest.fixture(scope="session", autouse=True)

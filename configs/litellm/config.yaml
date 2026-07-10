@@ -3,15 +3,10 @@
 # Regenerate      : make generate
 
 model_list:
-- model_name: qwen-0.8b
+- model_name: lfm2.5-8b-a1b
   litellm_params:
-    model: openai/Qwen/Qwen3.5-0.8B
-    api_base: http://localhost:8000/v1
-    api_key: none
-- model_name: minicpm-1b
-  litellm_params:
-    model: openai/openbmb/MiniCPM5-1B
-    api_base: http://localhost:8001/v1
+    model: openai/LiquidAI/LFM2.5-8B-A1B
+    api_base: http://localhost:8005/v1
     api_key: none
 router_settings:
   routing_strategy: least-busy
@@ -20,7 +15,7 @@ router_settings:
   allowed_fails: 1
   cooldown_time: 60
 general_settings:
-  master_key: sk-tunnel-dev-change-in-prod
+  master_key: os.environ/LITELLM_MASTER_KEY
 litellm_settings:
   request_timeout: 120
   drop_params: true

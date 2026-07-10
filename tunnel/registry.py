@@ -13,6 +13,7 @@ Design principles:
 """
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any, Optional
 
@@ -132,6 +133,25 @@ class LiteLLMGatewayConfig(BaseModel):
             )
         return v
 
+    @property
+    def resolved_master_key(self) -> Optional[str]:
+        """Master key with an ``os.environ/`` reference resolved from the environment.
+
+        The registry stores the key as a reference (e.g.
+        ``os.environ/LITELLM_MASTER_KEY``) so no secret is committed, and
+        LiteLLM resolves it at proxy boot. Clients that call the proxy (health
+        checks, the tool smoke test) must authenticate with the same resolved
+        value, so this mirrors that resolution. Requires the referenced env var
+        to be present (load ``.env`` first).
+
+        Returns:
+            The resolved key; a plain literal key unchanged; or None when the
+            key is unset or the referenced env var is not set.
+        """
+        if self.master_key and self.master_key.startswith("os.environ/"):
+            return os.environ.get(self.master_key.split("/", 1)[1])
+        return self.master_key
+
 
 class GlobalLMCacheConfig(BaseModel):
     backend: str = "cpu"
@@ -217,11 +237,15 @@ def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any
     return result
 
 
-def load_registry(path: Path | str = "configs/models.yaml") -> TunnelRegistry:
+def load_registry(path: Path | str | None = None) -> TunnelRegistry:
     """Load, merge defaults, validate, and return the TunnelRegistry.
 
     Args:
-        path: Path to the YAML registry file.
+        path: Path to the YAML registry file. If omitted, resolves from the
+            TUNNEL_REGISTRY env var (falling back to "configs/models.yaml")
+            — the same lookup tunnel.cli.registry_path() performs, so a bare
+            load_registry() call is still env-aware. CLI call sites pass
+            registry_path() explicitly rather than relying on this fallback.
 
     Returns:
         Validated TunnelRegistry instance.
@@ -230,6 +254,8 @@ def load_registry(path: Path | str = "configs/models.yaml") -> TunnelRegistry:
         FileNotFoundError: if the YAML file doesn't exist.
         pydantic.ValidationError: if the registry is invalid.
     """
+    if path is None:
+        path = os.environ.get("TUNNEL_REGISTRY", "configs/models.yaml")
     raw: dict[str, Any] = yaml.safe_load(Path(path).read_text())
     defaults: dict[str, Any] = raw.pop("defaults", {})
     raw["instances"] = [

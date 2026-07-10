@@ -121,12 +121,21 @@ def main() -> int:
     Returns:
         0 if every instance passed, 1 otherwise.
     """
+    # Load .env so the os.environ/LITELLM_MASTER_KEY reference resolves to the
+    # same key the proxy authenticates with. No-op if python-dotenv is absent.
+    try:
+        from dotenv import load_dotenv
+
+        load_dotenv()
+    except ImportError:
+        pass
+
     registry = load_registry(REGISTRY_PATH)
     base_url = f"http://localhost:{registry.litellm.port}"
 
     all_passed = True
     for inst in registry.instances:
-        passed, reason = _check_instance(base_url, registry.litellm.master_key, inst.id)
+        passed, reason = _check_instance(base_url, registry.litellm.resolved_master_key, inst.id)
         if passed:
             print(f"PASS {inst.id}")
         else:

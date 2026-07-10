@@ -90,7 +90,7 @@ instances:
 
 litellm:
   port: 4000
-  master_key: "sk-tunnel-dev-change-in-prod"
+  master_key: "os.environ/LITELLM_MASTER_KEY"
   routing_strategy: least-busy
   prometheus: true  # set to true to expose /metrics grafana dashboard
 
