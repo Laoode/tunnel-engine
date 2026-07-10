@@ -1,0 +1,101 @@
+# Tunnel Engine – Production Model Registry (RTX Pro 6000, 96 GB)
+# Selected via `make <target> REGISTRY=configs/models-prod.yaml` or the
+# TUNNEL_REGISTRY env var. configs/models.yaml remains the dev (L4 24 GB)
+# registry and the single source of truth for its own fleet — this file is
+# the prod counterpart, not a derived config. Layout: docs/PLAN.md
+# "96 GB production layout" table.
+
+# Defaults – merged into every instance. Instance-level values always win.
+defaults:
+  tensor_parallel_size: 1
+  dtype: "auto"
+  max_model_len: 16384
+  enable_thinking: false
+  lora:
+    enabled: false
+    modules: []
+  lmcache:
+    enabled: true
+    backend: cpu
+    max_cache_size_gb: 20
+    chunk_size: 256
+  extra_args: []
+
+# GPU memory budget – `make check` fails if instance gpu_memory_utilization sums past this.
+gpu:
+  budget: 0.90
+
+# Instances – all 7 Tools Bench models, BF16, sum(util) = 0.80 against budget 0.90.
+instances:
+  - id: qwen3.5-0.8b
+    model: Qwen/Qwen3.5-0.8B
+    port: 8000
+    gpu_memory_utilization: 0.03
+    attention_backend: FLASHINFER
+    chat_template: configs/templates/qwen3.5-enhanced.jinja
+    tool_parser: qwen3_xml
+    reasoning_parser: qwen3
+    description: "Qwen3.5 0.8B – Tool-calling bench model"
+
+  - id: qwen3.5-2b
+    model: Qwen/Qwen3.5-2B
+    port: 8001
+    gpu_memory_utilization: 0.06
+    attention_backend: FLASHINFER
+    chat_template: configs/templates/qwen3.5-enhanced.jinja
+    tool_parser: qwen3_xml
+    reasoning_parser: qwen3
+    description: "Qwen3.5 2B – Tool-calling bench model"
+
+  - id: qwen3.5-4b
+    model: Qwen/Qwen3.5-4B
+    port: 8002
+    gpu_memory_utilization: 0.11
+    attention_backend: FLASHINFER
+    chat_template: configs/templates/qwen3.5-enhanced.jinja
+    tool_parser: qwen3_xml
+    reasoning_parser: qwen3
+    description: "Qwen3.5 4B – Tool-calling bench model"
+
+  - id: gemma-4-e2b
+    model: google/gemma-4-E2B-it
+    port: 8003
+    gpu_memory_utilization: 0.14
+    tool_parser: gemma4
+    reasoning_parser: gemma4
+    description: "Gemma 4 E2B – Tool-calling bench model"
+
+  - id: gemma-4-e4b
+    model: google/gemma-4-E4B-it
+    port: 8004
+    gpu_memory_utilization: 0.22
+    tool_parser: gemma4
+    reasoning_parser: gemma4
+    description: "Gemma 4 E4B – Tool-calling bench model"
+
+  - id: lfm2.5-8b-a1b
+    model: LiquidAI/LFM2.5-8B-A1B
+    port: 8005
+    gpu_memory_utilization: 0.20
+    attention_backend: FLASHINFER
+    tool_parser: lfm2
+    reasoning_parser: qwen3
+    description: "LFM2.5 8B-A1B – Tool-calling bench model"
+
+  - id: minicpm5-1b
+    model: openbmb/MiniCPM5-1B
+    port: 8006
+    gpu_memory_utilization: 0.04
+    tool_parser: minicpm5
+    description: "MiniCPM5 1B – Tool-calling bench model"
+
+litellm:
+  port: 4000
+  master_key: "os.environ/LITELLM_MASTER_KEY"
+  routing_strategy: least-busy
+  prometheus: true 
+
+lmcache:
+  backend: cpu
+  max_cache_size_gb: 20
+  chunk_size: 256

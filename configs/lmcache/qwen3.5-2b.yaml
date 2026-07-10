@@ -1,0 +1,11 @@
+# AUTO-GENERATED for instance: qwen3.5-2b
+# Source : configs/models.yaml  |  Regenerate: make generate
+
+chunk_size: 256
+local_cpu:
+  enabled: true
+  max_cache_size: 20
+local_disk:
+  enabled: false
+  max_cache_size: 20
+  path: /tmp/lmcache/qwen3.5-2b
