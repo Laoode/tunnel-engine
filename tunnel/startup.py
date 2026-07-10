@@ -29,6 +29,7 @@ from dataclasses import dataclass, field
 import httpx
 import structlog
 
+from tunnel.orchestrator import is_alive
 from tunnel.registry import InstanceConfig, TunnelRegistry
 
 log = structlog.get_logger(__name__)
@@ -51,6 +52,7 @@ async def wait_for_instance(
     inst: InstanceConfig,
     timeout_s: float,
     poll_interval_s: float,
+    pid: int | None = None,
 ) -> bool:
     """Poll one instance's /health endpoint until it returns 200 or timeout expires.
 
@@ -59,6 +61,11 @@ async def wait_for_instance(
         inst: The instance to poll.
         timeout_s: Max seconds to wait before declaring failure.
         poll_interval_s: Seconds to sleep between poll attempts.
+        pid: If given, checked for liveness each poll iteration. When the
+            process has died, the wait aborts immediately (returns False)
+            instead of polling health until timeout_s expires — otherwise a
+            crashed engine blocks the gate for the full timeout even though
+            it will never answer /health again.
 
     Returns:
         True if the instance responded 200 within timeout_s, False otherwise.
@@ -67,6 +74,9 @@ async def wait_for_instance(
     attempt = 0
     while time.monotonic() < deadline:
         attempt += 1
+        if pid is not None and not is_alive(pid):
+            log.error("instance_died", instance=inst.id, pid=pid, attempt=attempt)
+            return False
         try:
             resp = await client.get(inst.health_url, timeout=3.0)
             if resp.status_code == 200:
@@ -94,6 +104,7 @@ async def wait_for_all(
     registry: TunnelRegistry,
     timeout_s: float = DEFAULT_TIMEOUT_S,
     poll_interval_s: float = DEFAULT_POLL_INTERVAL_S,
+    pids: dict[str, int] | None = None,
 ) -> StartupResult:
     """Wait for all registered instances to become healthy, polling concurrently.
 
@@ -104,6 +115,11 @@ async def wait_for_all(
         registry: The loaded TunnelRegistry.
         timeout_s: Per-instance timeout in seconds.
         poll_interval_s: Seconds between health polls per instance.
+        pids: Optional map of instance id -> pid. When an instance's id is
+            present, its wait aborts immediately if that pid dies instead of
+            polling until timeout_s. Callers with no pids to track (e.g.
+            `cmd_start`, which waits on processes it didn't launch) can omit
+            this and keep the original poll-until-timeout behavior.
 
     Returns:
         StartupResult with ready=True only when every instance passed.
@@ -114,12 +130,16 @@ async def wait_for_all(
         timeout_s=timeout_s,
     )
     t0 = time.monotonic()
+    pids = pids or {}
 
     async with httpx.AsyncClient() as client:
         outcomes: list[bool] = list(
             await asyncio.gather(
                 *[
-                    wait_for_instance(client, inst, timeout_s, poll_interval_s)
+                    wait_for_instance(
+                        client, inst, timeout_s, poll_interval_s,
+                        pid=pids.get(inst.id),
+                    )
                     for inst in registry.instances
                 ]
             )
@@ -138,3 +158,30 @@ async def wait_for_all(
         log.info("startup_complete", elapsed_s=elapsed)
 
     return StartupResult(ready=not failed, elapsed_s=elapsed, failed_instances=failed)
+
+
+async def wait_for_one(
+    inst: InstanceConfig,
+    timeout_s: float = DEFAULT_TIMEOUT_S,
+    poll_interval_s: float = DEFAULT_POLL_INTERVAL_S,
+    pid: int | None = None,
+) -> bool:
+    """Wait for a single instance to become healthy, opening its own HTTP client.
+
+    Used by `cmd_up`'s sequential launch mode to health-gate each instance
+    before launching the next one, avoiding the concurrent-startup GPU
+    memory profiling corruption that `wait_for_all`'s all-at-once polling
+    would otherwise race into.
+
+    Args:
+        inst: The instance to poll.
+        timeout_s: Max seconds to wait before declaring failure.
+        poll_interval_s: Seconds to sleep between poll attempts.
+        pid: If given, abort immediately once this pid is no longer alive
+            instead of polling health until timeout_s.
+
+    Returns:
+        True if the instance responded 200 within timeout_s, False otherwise.
+    """
+    async with httpx.AsyncClient() as client:
+        return await wait_for_instance(client, inst, timeout_s, poll_interval_s, pid=pid)

@@ -69,7 +69,7 @@ async def test_wait_for_instance_returns_false_on_non_200() -> None:
 async def test_wait_for_all_returns_ready_when_all_healthy() -> None:
     registry = _make_registry(2)
 
-    async def _always_ready(client, inst, timeout_s, poll_interval_s) -> bool:
+    async def _always_ready(client, inst, timeout_s, poll_interval_s, pid=None) -> bool:
         return True
 
     with patch("tunnel.startup.wait_for_instance", side_effect=_always_ready):
@@ -84,7 +84,7 @@ async def test_wait_for_all_returns_not_ready_when_one_fails() -> None:
     registry = _make_registry(2)
     failing_id = registry.instances[1].id
 
-    async def _selective(client, inst, timeout_s, poll_interval_s) -> bool:
+    async def _selective(client, inst, timeout_s, poll_interval_s, pid=None) -> bool:
         return inst.id != failing_id
 
     with patch("tunnel.startup.wait_for_instance", side_effect=_selective):
@@ -99,7 +99,7 @@ async def test_wait_for_all_returns_not_ready_when_one_fails() -> None:
 async def test_wait_for_all_all_fail() -> None:
     registry = _make_registry(3)
 
-    async def _always_fail(client, inst, timeout_s, poll_interval_s) -> bool:
+    async def _always_fail(client, inst, timeout_s, poll_interval_s, pid=None) -> bool:
         return False
 
     with patch("tunnel.startup.wait_for_instance", side_effect=_always_fail):
@@ -114,7 +114,7 @@ async def test_wait_for_all_failed_instances_are_correct_ids() -> None:
     registry = _make_registry(3)
     failing = {registry.instances[0].id, registry.instances[2].id}
 
-    async def _selective(client, inst, timeout_s, poll_interval_s) -> bool:
+    async def _selective(client, inst, timeout_s, poll_interval_s, pid=None) -> bool:
         return inst.id not in failing
 
     with patch("tunnel.startup.wait_for_instance", side_effect=_selective):
