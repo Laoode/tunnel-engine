@@ -11,15 +11,17 @@ Usage:
   python -m tunnel.cli proxy                   Start the LiteLLM proxy
   python -m tunnel.cli start                   Wait for instances, then start proxy
   python -m tunnel.cli up                      Launch all instances, health-gate, start proxy
-  python -m tunnel.cli down                    Stop all tracked vLLM instances
+  python -m tunnel.cli stop    <instance-id>   Stop ONE instance, leave the rest + proxy running
+  python -m tunnel.cli down                    Stop every instance and the proxy
 
 Or via Makefile:
-  make serve ID=qwen-0.8b
+  make serve ID=<instance-id>
   make health
   make generate
   make proxy
   make start
   make up
+  make stop ID=<instance-id>
   make down
 """
 from __future__ import annotations
@@ -36,6 +38,7 @@ from tunnel.gateway.config_builder import write_litellm_config
 from tunnel.health.checker import check_all, collect_gpu_stats, format_report
 from tunnel.logging import configure_logging
 from tunnel.orchestrator import (
+    PID_DIR,
     adopt_instance,
     find_listening_pid,
     is_alive,
@@ -44,10 +47,23 @@ from tunnel.orchestrator import (
     stop_instance,
 )
 from tunnel.registry import InstanceConfig, load_registry
-from tunnel.startup import DEFAULT_TIMEOUT_S, wait_for_all
+from tunnel.startup import DEFAULT_TIMEOUT_S, wait_for_all, wait_for_one
 
-REGISTRY_PATH = "configs/models.yaml"
 LITELLM_CONFIG = "configs/litellm/config.yaml"
+
+
+def registry_path() -> str:
+    """Return the active registry file path.
+
+    Reads the TUNNEL_REGISTRY environment variable at call time (not import
+    time), so callers get the value in effect at the moment the command
+    runs and tests can monkeypatch it per-case.
+
+    Returns:
+        Path to the registry YAML file. Defaults to "configs/models.yaml"
+        when TUNNEL_REGISTRY is unset.
+    """
+    return os.environ.get("TUNNEL_REGISTRY", "configs/models.yaml")
 
 
 def build_serve_command(inst: InstanceConfig) -> list[str]:
@@ -110,13 +126,14 @@ def cmd_serve(instance_id: str) -> None:
     tensor-parallel-size, and extra_args passthrough.
     Replaces the current process via os.execvpe — no return.
     """
-    registry = load_registry(REGISTRY_PATH)
+    reg_path = registry_path()
+    registry = load_registry(reg_path)
     inst = registry.get_instance(instance_id)
 
     if inst is None:
         available = [i.id for i in registry.instances]
         print(
-            f"ERROR: Instance '{instance_id}' not found in {REGISTRY_PATH}.\n"
+            f"ERROR: Instance '{instance_id}' not found in {reg_path}.\n"
             f"  Available: {available}",
             file=sys.stderr,
         )
@@ -149,7 +166,7 @@ def cmd_serve(instance_id: str) -> None:
 
 def cmd_health() -> None:
     """Poll all vLLM instances and print a health + GPU memory report."""
-    registry = load_registry(REGISTRY_PATH)
+    registry = load_registry(registry_path())
     results = asyncio.run(check_all(registry))
     gpu_stats = collect_gpu_stats()
     print(format_report(results, gpu_stats=gpu_stats))
@@ -159,7 +176,17 @@ def cmd_health() -> None:
 
 def cmd_generate() -> None:
     """Rebuild all derived configs from configs/models.yaml."""
-    registry = load_registry(REGISTRY_PATH)
+    registry = load_registry(registry_path())
+
+    master_key = registry.litellm.master_key
+    if master_key and not master_key.startswith("os.environ/"):
+        print(
+            f"WARN: litellm.master_key is a literal value in {registry_path()}. "
+            f"It will be written into {LITELLM_CONFIG} and committed to git in "
+            "plaintext.\n  Use 'os.environ/LITELLM_MASTER_KEY' and set the secret "
+            "in .env (dev) or the container env (prod) instead.",
+            file=sys.stderr,
+        )
 
     litellm_path = write_litellm_config(registry, LITELLM_CONFIG)
     print(f"  LiteLLM config    -> {litellm_path}")
@@ -192,7 +219,7 @@ def cmd_generate() -> None:
 
 def cmd_list() -> None:
     """List all registered instances."""
-    registry = load_registry(REGISTRY_PATH)
+    registry = load_registry(registry_path())
     print(f"\n{'ID':<24}  {'PORT':<6}  {'GPU':<6}  {'TP':<4}  MODEL")
     print("-" * 72)
     for inst in registry.instances:
@@ -217,7 +244,7 @@ def cmd_proxy() -> None:
         )
         sys.exit(1)
 
-    registry = load_registry(REGISTRY_PATH)
+    registry = load_registry(registry_path())
     cmd = [
         "litellm",
         "--config", str(config_path),
@@ -244,7 +271,7 @@ def cmd_start(args: list[str]) -> None:
     )
     parsed = parser.parse_args(args)
 
-    registry = load_registry(REGISTRY_PATH)
+    registry = load_registry(registry_path())
     result = asyncio.run(wait_for_all(registry, timeout_s=parsed.timeout))
 
     if not result.ready:
@@ -264,31 +291,62 @@ def cmd_start(args: list[str]) -> None:
 
 
 def cmd_up(args: list[str]) -> None:
-    """Launch every registered instance in the background, health-gate, then exec the proxy.
+    """Launch every registered instance, health-gate, then exec the proxy.
 
-    Skips instances that already have a live tracked pid. If a port is already
-    being listened on by an untracked process (e.g. started manually via
-    `make serve`), adopts it into the pidfile instead of launching a
-    duplicate onto the same port/GPU. Instances that fail to become healthy
-    within the timeout are left running (they may still be loading) — the
-    user decides whether to wait longer or investigate the log.
+    Launches instances SEQUENTIALLY by default (in registry order): each
+    newly-launched instance is health-gated before the next one starts. This
+    exists because concurrent vLLM engine startups corrupt each other's GPU
+    memory profiling — each process observes the other's in-flight
+    allocations as externally-used memory and computes a negative or
+    insufficient KV cache budget, crashing with "No available memory for the
+    cache blocks" even though the static gpu_memory_utilization split fits
+    (reproduced with two Qwen models at 0.35 + 0.45 utilization on an empty
+    24 GB GPU). Pass --parallel to restore the previous launch-all-then-gate
+    behavior for fleets whose models profile fast enough to avoid this.
+
+    Skips instances that already have a live tracked pid. If a port is
+    already being listened on by an untracked process (e.g. started
+    manually via `make serve`), adopts it into the pidfile instead of
+    launching a duplicate onto the same port/GPU.
+
+    In sequential mode, an instance whose health wait fails is reported to
+    stderr and the loop moves on to the next instance — a broken model
+    shouldn't block the rest of the fleet from launching. The final
+    wait_for_all() gate below (pid-aware, so an already-dead instance fails
+    fast instead of stalling to --timeout) still catches it and exits
+    nonzero.
 
     Args:
-        args: Optional ["--timeout", "<seconds>"].
+        args: Optional ["--timeout", "<seconds>", "--parallel"].
     """
     parser = argparse.ArgumentParser(prog="tunnel up")
     parser.add_argument(
         "--timeout", type=float, default=DEFAULT_TIMEOUT_S,
-        help=f"Per-instance health wait timeout in seconds (default: {DEFAULT_TIMEOUT_S})",
+        help=(
+            f"Per-instance health wait timeout in seconds (default: {DEFAULT_TIMEOUT_S}). "
+            "Applies per instance, not to the whole fleet, in both sequential and "
+            "--parallel mode."
+        ),
+    )
+    parser.add_argument(
+        "--parallel", action="store_true",
+        help=(
+            "Launch all instances immediately, then health-gate them together, "
+            "instead of the sequential default. Only safe for fleets whose models "
+            "profile GPU memory fast enough to avoid concurrent-startup corruption."
+        ),
     )
     parsed = parser.parse_args(args)
 
-    registry = load_registry(REGISTRY_PATH)
+    registry = load_registry(registry_path())
+
+    launched: dict[str, int] = {}  # instance id -> pid, for dead-process fail-fast below
 
     for inst in registry.instances:
         pid = read_pid(inst.id)
         if pid is not None and is_alive(pid):
             print(f".  {inst.id}  already running (pid {pid})", file=sys.stderr)
+            launched[inst.id] = pid
             continue
         listening_pid = find_listening_pid(inst.port)
         if listening_pid is not None:
@@ -298,11 +356,23 @@ def cmd_up(args: list[str]) -> None:
                 f"(pid {listening_pid})",
                 file=sys.stderr,
             )
+            launched[inst.id] = listening_pid
             continue
+
         pid = launch_instance(inst)
         print(f".  {inst.id}  launched (pid {pid}) -> logs/{inst.id}.log", file=sys.stderr)
+        launched[inst.id] = pid
 
-    result = asyncio.run(wait_for_all(registry, timeout_s=parsed.timeout))
+        if not parsed.parallel:
+            ok = asyncio.run(wait_for_one(inst, timeout_s=parsed.timeout, pid=pid))
+            if not ok:
+                print(
+                    f"ERROR: {inst.id} did not become healthy within {parsed.timeout}s "
+                    f"-- check logs/{inst.id}.log",
+                    file=sys.stderr,
+                )
+
+    result = asyncio.run(wait_for_all(registry, timeout_s=parsed.timeout, pids=launched))
 
     if not result.ready:
         print(
@@ -322,18 +392,102 @@ def cmd_up(args: list[str]) -> None:
 
 
 def cmd_down(_: list[str]) -> None:
-    """Stop every tracked vLLM instance cleanly (SIGTERM, then SIGKILL if needed)."""
-    registry = load_registry(REGISTRY_PATH)
+    """Stop everything this engine started, tracked or not, and free the GPU.
+
+    Three passes so nothing leaks a GPU allocation or a port:
+      1. Tracked pidfiles (.tunnel/*.pid) - ground truth for what `up`
+         launched; still stops those instances even if the registry was
+         edited between `up` and `down` (e.g. swapping bench models).
+      2. Untracked listeners on each registry instance port - catches
+         instances started foreground via `make serve`, which exec into
+         vLLM without ever writing a pidfile.
+      3. The LiteLLM proxy, if something is listening on litellm.port.
+
+    Passes 2 and 3 adopt the found pid into a pidfile first, then reuse
+    stop_instance so the same SIGTERM-then-SIGKILL escalation applies to
+    everything.
+    """
+    registry = load_registry(registry_path())
+    stopped = 0
+
+    for pidfile in sorted(PID_DIR.glob("*.pid")):
+        inst_id = pidfile.stem
+        outcome = stop_instance(inst_id)
+        print(f".  {inst_id}  {outcome}", file=sys.stderr)
+        stopped += 1
 
     for inst in registry.instances:
+        listening_pid = find_listening_pid(inst.port)
+        if listening_pid is not None and is_alive(listening_pid):
+            adopt_instance(inst.id, listening_pid)
+            outcome = stop_instance(inst.id)
+            print(
+                f".  {inst.id}  {outcome} (untracked on :{inst.port}, pid {listening_pid})",
+                file=sys.stderr,
+            )
+            stopped += 1
+
+    proxy_pid = find_listening_pid(registry.litellm.port)
+    if proxy_pid is not None and is_alive(proxy_pid):
+        adopt_instance("litellm-proxy", proxy_pid)
+        outcome = stop_instance("litellm-proxy")
+        print(
+            f".  litellm-proxy  {outcome} (:{registry.litellm.port}, pid {proxy_pid})",
+            file=sys.stderr,
+        )
+        stopped += 1
+
+    if stopped == 0:
+        print(".  nothing running", file=sys.stderr)
+
+
+def cmd_stop(instance_id: str) -> None:
+    """Stop ONE instance without touching the rest of the fleet or the proxy.
+
+    Use this to retire a single model while others keep serving production
+    traffic. Each instance is a separate process on its own port and the
+    LiteLLM proxy is a separate process, so stopping one leaves the surviving
+    models and the gateway running with zero downtime. Calls the proxy routes
+    to the stopped model will error until it is brought back with
+    `make serve ID=<id>` (or `make up`); the proxy still advertises it in
+    /v1/models until you edit the registry and regenerate.
+
+    Resolves the target the same way `cmd_down` does: a tracked pidfile if the
+    instance was launched via `up`, plus any untracked foreground process
+    listening on its port (`make serve`).
+
+    Args:
+        instance_id: The registry id of the instance to stop.
+    """
+    registry = load_registry(registry_path())
+    inst = registry.get_instance(instance_id)
+    if inst is None:
+        available = [i.id for i in registry.instances]
+        print(
+            f"ERROR: Instance '{instance_id}' not found in {registry_path()}.\n"
+            f"  Available: {available}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    stopped = False
+    if read_pid(inst.id) is not None:
         outcome = stop_instance(inst.id)
         print(f".  {inst.id}  {outcome}", file=sys.stderr)
+        stopped = True
 
-    print(
-        "\nNote: the LiteLLM proxy is not tracked by pidfiles — if it's running "
-        "in another terminal, Ctrl-C it there.",
-        file=sys.stderr,
-    )
+    listening_pid = find_listening_pid(inst.port)
+    if listening_pid is not None and is_alive(listening_pid):
+        adopt_instance(inst.id, listening_pid)
+        outcome = stop_instance(inst.id)
+        print(
+            f".  {inst.id}  {outcome} (untracked on :{inst.port}, pid {listening_pid})",
+            file=sys.stderr,
+        )
+        stopped = True
+
+    if not stopped:
+        print(f".  {inst.id}  not running", file=sys.stderr)
 
 
 _COMMANDS = {
@@ -344,6 +498,7 @@ _COMMANDS = {
     "proxy":    lambda _: cmd_proxy(),
     "start":    lambda args: cmd_start(args),
     "up":       lambda args: cmd_up(args),
+    "stop":     lambda args: cmd_stop(args[0] if args else _die("stop requires <instance-id>")),
     "down":     lambda args: cmd_down(args),
 }
 
@@ -353,7 +508,22 @@ def _die(msg: str) -> None:
     sys.exit(1)
 
 
+def _load_env() -> None:
+    """Load .env into the process environment before anything reads os.environ.
+
+    Values already present in the real environment win (override=False), so a
+    container or secret manager that exports LITELLM_MASTER_KEY / HF_TOKEN
+    takes precedence over the dev .env file. No-op if python-dotenv is absent.
+    """
+    try:
+        from dotenv import load_dotenv
+    except ImportError:
+        return
+    load_dotenv(override=False)
+
+
 def main() -> None:
+    _load_env()
     configure_logging(level=os.getenv("TUNNEL_LOG_LEVEL", "INFO"))
     if len(sys.argv) < 2 or sys.argv[1] not in _COMMANDS:
         print(__doc__, file=sys.stderr)

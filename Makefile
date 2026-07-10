@@ -1,11 +1,13 @@
 PYTHON      := python3
-REGISTRY    := configs/models.yaml
+REGISTRY    ?= configs/models.yaml
 LINT_PATHS  := tunnel/ tests/
 HF_CACHE    := ~/.cache/huggingface/hub/
 
+export TUNNEL_REGISTRY := $(REGISTRY)
+
 .DEFAULT_GOAL := help
 
-.PHONY: help generate list health proxy serve test lint fmt check up down
+.PHONY: help generate list health proxy serve test lint fmt check up stop down
 
 help:
 	@echo ""
@@ -18,10 +20,11 @@ help:
 generate: ## Rebuild all derived configs from configs/models.yaml
 	$(PYTHON) -m tunnel.cli generate
 
-check: ## Validate configs/models.yaml without writing anything
+check: ## Validate the registry (configs/models.yaml, or REGISTRY=<path>) without writing anything
 	@$(PYTHON) -c \
-	  "from tunnel.registry import load_registry; \
-	   r = load_registry(); \
+	  "from tunnel.cli import registry_path; \
+	   from tunnel.registry import load_registry; \
+	   r = load_registry(registry_path()); \
 	   print(f'✓ Registry valid — {len(r.instances)} instance(s), proxy on :{r.litellm.port}')"
 
 list: ## List all registered model instances
@@ -44,10 +47,18 @@ up-timeout: ## Same as up with custom timeout. Usage: make up-timeout TIMEOUT=12
 	@if [ -z "$(TIMEOUT)" ]; then echo "Usage: make up-timeout TIMEOUT=<seconds>"; exit 1; fi
 	$(PYTHON) -m tunnel.cli up --timeout $(TIMEOUT)
 
-down: ## Stop all tracked vLLM instances cleanly
+stop: ## Stop ONE instance, leaving the others and the proxy running. Usage: make stop ID=<instance-id>
+	@if [ -z "$(ID)" ]; then \
+		echo "Usage: make stop ID=<instance-id>"; \
+		$(PYTHON) -m tunnel.cli list; \
+		exit 1; \
+	fi
+	$(PYTHON) -m tunnel.cli stop $(ID)
+
+down: ## Stop every instance (serve or up) and the proxy, then free the GPU
 	$(PYTHON) -m tunnel.cli down
 
-serve: ## Launch a vLLM instance. Usage: make serve ID=qwen-0.8b
+serve: ## Launch one vLLM instance in the foreground. Usage: make serve ID=<instance-id>
 	@if [ -z "$(ID)" ]; then \
 		echo "Usage: make serve ID=<instance-id>"; \
 		$(PYTHON) -m tunnel.cli list; \
@@ -61,7 +72,7 @@ test: ## Run the full test suite
 test-unit: ## Run unit tests only (fast, no live services required)
 	$(PYTHON) -m pytest tests/unit/ -v
 
-test-integration: ## Run integration tests (requires: make proxy + vLLM instances)
+test-integration: ## Run integration tests (requires a running engine: make up, or serve + start)
 	$(PYTHON) -m pytest tests/integration/ -v -m integration
 
 lint: ## Lint with ruff
