@@ -26,10 +26,23 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+import psutil
+
 from tunnel.registry import InstanceConfig
 
 PID_DIR = Path(".tunnel")
 LOG_DIR = Path("logs")
+
+
+def _write_pidfile(inst_id: str, pid: int) -> None:
+    """Record a pid as the tracked process for an instance.
+
+    Args:
+        inst_id: The instance ID whose pidfile to write.
+        pid: The pid to record.
+    """
+    PID_DIR.mkdir(parents=True, exist_ok=True)
+    (PID_DIR / f"{inst_id}.pid").write_text(str(pid))
 
 
 def launch_instance(inst: InstanceConfig) -> int:
@@ -56,8 +69,41 @@ def launch_instance(inst: InstanceConfig) -> int:
             start_new_session=True,
         )
 
-    (PID_DIR / f"{inst.id}.pid").write_text(str(proc.pid))
+    _write_pidfile(inst.id, proc.pid)
     return proc.pid
+
+
+def adopt_instance(inst_id: str, pid: int) -> None:
+    """Track an already-running, untracked process as an instance's pid.
+
+    Used by `tunnel up` when a port is already being listened on by a
+    process with no (or a stale) pidfile — e.g. started manually via
+    `make serve`, or left behind after a duplicate launch crashed and
+    clobbered the original pidfile. Adopting avoids launching a second
+    process onto the same port/GPU.
+
+    Args:
+        inst_id: The instance ID to adopt.
+        pid: The pid of the untracked process already listening on the
+            instance's port.
+    """
+    _write_pidfile(inst_id, pid)
+
+
+def find_listening_pid(port: int) -> int | None:
+    """Find the pid of the process listening on a local TCP port.
+
+    Args:
+        port: The TCP port to check.
+
+    Returns:
+        The pid of the process in LISTEN state on `port`, or None if no
+        such process is found.
+    """
+    for conn in psutil.net_connections(kind="tcp"):
+        if conn.status == psutil.CONN_LISTEN and conn.laddr.port == port:
+            return conn.pid
+    return None
 
 
 def is_alive(pid: int) -> bool:
@@ -111,6 +157,12 @@ def stop_instance(inst_id: str, term_wait_s: float = 10.0) -> str:
         One of "stopped" (SIGTERM sufficed), "killed" (needed SIGKILL),
         "stale" (pidfile pointed at a dead process), or "absent" (no
         pidfile).
+
+    Note:
+        A pid recorded via `adopt_instance` may not be a process-group
+        leader (it wasn't spawned with `start_new_session=True` by us), so
+        `os.killpg` can raise `ProcessLookupError` for it — the existing
+        killpg-then-kill fallback below already handles that case.
     """
     pid_path = PID_DIR / f"{inst_id}.pid"
     pidfile_existed = pid_path.exists()

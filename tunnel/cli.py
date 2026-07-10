@@ -26,7 +26,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-from math import e
 import os
 import sys
 import json
@@ -36,7 +35,14 @@ from tunnel.cache.lmcache_config import write_lmcache_configs
 from tunnel.gateway.config_builder import write_litellm_config
 from tunnel.health.checker import check_all, collect_gpu_stats, format_report
 from tunnel.logging import configure_logging
-from tunnel.orchestrator import is_alive, launch_instance, read_pid, stop_instance
+from tunnel.orchestrator import (
+    adopt_instance,
+    find_listening_pid,
+    is_alive,
+    launch_instance,
+    read_pid,
+    stop_instance,
+)
 from tunnel.registry import InstanceConfig, load_registry
 from tunnel.startup import DEFAULT_TIMEOUT_S, wait_for_all
 
@@ -260,9 +266,12 @@ def cmd_start(args: list[str]) -> None:
 def cmd_up(args: list[str]) -> None:
     """Launch every registered instance in the background, health-gate, then exec the proxy.
 
-    Skips instances that already have a live tracked pid. Instances that fail to
-    become healthy within the timeout are left running (they may still be
-    loading) — the user decides whether to wait longer or investigate the log.
+    Skips instances that already have a live tracked pid. If a port is already
+    being listened on by an untracked process (e.g. started manually via
+    `make serve`), adopts it into the pidfile instead of launching a
+    duplicate onto the same port/GPU. Instances that fail to become healthy
+    within the timeout are left running (they may still be loading) — the
+    user decides whether to wait longer or investigate the log.
 
     Args:
         args: Optional ["--timeout", "<seconds>"].
@@ -280,6 +289,15 @@ def cmd_up(args: list[str]) -> None:
         pid = read_pid(inst.id)
         if pid is not None and is_alive(pid):
             print(f".  {inst.id}  already running (pid {pid})", file=sys.stderr)
+            continue
+        listening_pid = find_listening_pid(inst.port)
+        if listening_pid is not None:
+            adopt_instance(inst.id, listening_pid)
+            print(
+                f".  {inst.id}  adopted untracked process on :{inst.port} "
+                f"(pid {listening_pid})",
+                file=sys.stderr,
+            )
             continue
         pid = launch_instance(inst)
         print(f".  {inst.id}  launched (pid {pid}) -> logs/{inst.id}.log", file=sys.stderr)

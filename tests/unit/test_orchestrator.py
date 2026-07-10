@@ -14,9 +14,13 @@ import signal
 
 import pytest
 
+import psutil
+
 from tunnel.orchestrator import (
     LOG_DIR,
     PID_DIR,
+    adopt_instance,
+    find_listening_pid,
     is_alive,
     launch_instance,
     read_pid,
@@ -151,3 +155,37 @@ def test_launch_instance_writes_pidfile_and_log(monkeypatch):
     contents = log_path.read_text()
     assert "=== tunnel up test-model @" in contents
     assert "child output" in contents
+
+
+def test_adopt_instance_writes_pidfile():
+    adopt_instance("m1", 777)
+    assert (PID_DIR / "m1.pid").read_text() == "777"
+
+
+class _FakeAddr:
+    def __init__(self, port):
+        self.port = port
+
+
+class _FakeConn:
+    def __init__(self, status, port, pid):
+        self.status = status
+        self.laddr = _FakeAddr(port)
+        self.pid = pid
+
+
+def test_find_listening_pid_returns_pid_for_matching_listen_port(monkeypatch):
+    conns = [
+        _FakeConn(psutil.CONN_ESTABLISHED, 8000, 111),
+        _FakeConn(psutil.CONN_LISTEN, 8001, 222),
+    ]
+    monkeypatch.setattr(psutil, "net_connections", lambda kind: conns)
+
+    assert find_listening_pid(8001) == 222
+
+
+def test_find_listening_pid_none_when_no_match(monkeypatch):
+    conns = [_FakeConn(psutil.CONN_LISTEN, 8001, 222)]
+    monkeypatch.setattr(psutil, "net_connections", lambda kind: conns)
+
+    assert find_listening_pid(9999) is None
