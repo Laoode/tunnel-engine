@@ -41,6 +41,7 @@ instances:
     model: openbmb/MiniCPM5-1B
     port: 8001
     gpu_memory_utilization: 0.45
+    tool_parser: minicpm5
     description: "MiniCPM 1B – Tool-calling bench model"
 
   # ── Add more instances below 

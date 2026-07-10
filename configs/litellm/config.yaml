@@ -19,9 +19,6 @@ router_settings:
   retry_after: 5
   allowed_fails: 1
   cooldown_time: 60
-  fallbacks:
-  - qwen-0.8b:
-    - minicpm-1b
 general_settings:
   master_key: sk-tunnel-dev-change-in-prod
 litellm_settings:
