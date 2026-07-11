@@ -101,3 +101,35 @@ def test_served_model_name_used_when_set():
 def test_served_model_name_unset_falls_back_to_model():
     cfg = build_litellm_config(_reg(1))
     assert cfg["model_list"][0]["litellm_params"]["model"] == "openai/org/model-0"
+
+
+def _reg_with_remote() -> TunnelRegistry:
+    return TunnelRegistry.model_validate({
+        "instances": [
+            {"id": "local-a", "model": "org/a", "port": 8000,
+             "gpu_memory_utilization": 0.4},
+        ],
+        "remote_models": [
+            {"id": "deepseek-v4-pro", "upstream_model": "deepseek-v4-pro",
+             "api_base": "https://api.deepseek.com", "api_key_env": "DEEPSEEK_API_KEY"},
+        ],
+        "litellm": {"port": 4000, "master_key": "sk-test",
+                    "routing_strategy": "least-busy"},
+    })
+
+
+def test_remote_model_appended_to_model_list():
+    entry = next(
+        m for m in build_litellm_config(_reg_with_remote())["model_list"]
+        if m["model_name"] == "deepseek-v4-pro"
+    )
+    assert entry["litellm_params"]["model"] == "openai/deepseek-v4-pro"
+    assert entry["litellm_params"]["api_base"] == "https://api.deepseek.com"
+
+
+def test_remote_model_api_key_is_env_reference_not_secret():
+    entry = next(
+        m for m in build_litellm_config(_reg_with_remote())["model_list"]
+        if m["model_name"] == "deepseek-v4-pro"
+    )
+    assert entry["litellm_params"]["api_key"] == "os.environ/DEEPSEEK_API_KEY"

@@ -45,6 +45,20 @@ def build_litellm_config(registry: TunnelRegistry) -> dict:
         for inst in registry.instances
     ]
 
+    # Remote OpenAI-compatible upstreams (e.g. DeepSeek). The key is stored as an
+    # os.environ/ reference so no secret is written into the generated config.
+    model_list += [
+        {
+            "model_name": rm.id,
+            "litellm_params": {
+                "model": f"{rm.provider}/{rm.upstream_model}",
+                "api_base": rm.api_base,
+                "api_key": f"os.environ/{rm.api_key_env}",
+            },
+        }
+        for rm in registry.remote_models
+    ]
+
     router_settings: dict = {
         "routing_strategy": registry.litellm.routing_strategy,
         "num_retries": 3,

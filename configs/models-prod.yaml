@@ -89,11 +89,28 @@ instances:
     tool_parser: minicpm5
     description: "MiniCPM5 1B – Tool-calling bench model"
 
+# Remote OpenAI-compatible upstreams, routed through the same :4000 gateway.
+# No local process (no port / GPU); never launched or health-gated. Set
+# DEEPSEEK_API_KEY in the container env / secret manager.
+remote_models:
+  - id: deepseek-v4-pro
+    upstream_model: deepseek-v4-pro
+    api_base: https://api.deepseek.com
+    api_key_env: DEEPSEEK_API_KEY
+    thinking: true
+    description: "DeepSeek V4 Pro – hosted, thinking-capable"
+
+  - id: deepseek-v4-flash
+    upstream_model: deepseek-v4-flash
+    api_base: https://api.deepseek.com
+    api_key_env: DEEPSEEK_API_KEY
+    description: "DeepSeek V4 Flash – hosted, fast/cheap"
+
 litellm:
   port: 4000
   master_key: "os.environ/LITELLM_MASTER_KEY"
   routing_strategy: least-busy
-  prometheus: true 
+  prometheus: true
 
 lmcache:
   backend: cpu
