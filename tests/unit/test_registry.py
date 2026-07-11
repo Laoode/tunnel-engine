@@ -196,3 +196,52 @@ def test_gpu_budget_out_of_range_rejected():
 def test_gpu_budget_defaults_when_block_absent():
     reg = load_registry(_write(_minimal_registry(_minimal_instance())))
     assert reg.gpu.budget == 0.90
+
+
+# Remote models (DeepSeek and other hosted OpenAI-compatible upstreams)
+def _remote(**overrides) -> dict:
+    return {"id": "deepseek-v4-pro", "upstream_model": "deepseek-v4-pro",
+            "api_base": "https://api.deepseek.com",
+            "api_key_env": "DEEPSEEK_API_KEY", **overrides}
+
+
+def test_remote_models_default_to_empty():
+    reg = load_registry(_write(_minimal_registry(_minimal_instance())))
+    assert reg.remote_models == []
+
+
+def test_remote_model_loads_without_port_or_gpu():
+    data = {"instances": [_minimal_instance()], "remote_models": [_remote()]}
+    reg = load_registry(_write(data))
+    assert reg.remote_models[0].provider == "openai"       # default prefix
+    assert reg.remote_models[0].upstream_model == "deepseek-v4-pro"
+
+
+def test_remote_does_not_count_against_gpu_budget():
+    # Instance already at budget; adding a remote model must not tip it over.
+    data = {"instances": [_minimal_instance(gpu_memory_utilization=0.90)],
+            "remote_models": [_remote()]}
+    reg = load_registry(_write(data))
+    assert len(reg.remote_models) == 1
+
+
+def test_remote_id_colliding_with_instance_rejected():
+    data = {"instances": [_minimal_instance(id="shared")],
+            "remote_models": [_remote(id="shared")]}
+    with pytest.raises(Exception, match="[Dd]uplicate.*ID"):
+        load_registry(_write(data))
+
+
+def test_local_can_fall_back_to_remote_model():
+    data = {"instances": [_minimal_instance(id="local", fallbacks=["deepseek-v4-pro"])],
+            "remote_models": [_remote()]}
+    reg = load_registry(_write(data))
+    assert reg.instances[0].fallbacks == ["deepseek-v4-pro"]
+
+
+def test_invalid_remote_serde_rejected():
+    with pytest.raises(Exception, match="remote_serde"):
+        load_registry(_write(_minimal_registry(
+            {**_minimal_instance(),
+             "lmcache": {"enabled": True, "backend": "redis", "remote_serde": "zstd"}}
+        )))

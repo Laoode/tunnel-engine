@@ -45,6 +45,7 @@ class LMCacheInstanceConfig(BaseModel):
     backend: str = "cpu"
     max_cache_size_gb: int = 20
     chunk_size: int = 256
+    remote_serde: str = "naive"  # only used when backend == "redis"
 
     @field_validator("backend")
     @classmethod
@@ -52,6 +53,16 @@ class LMCacheInstanceConfig(BaseModel):
         allowed = {"cpu", "disk", "redis"}
         if v not in allowed:
             raise ValueError(f"lmcache.backend must be one of {allowed}, got '{v}'")
+        return v
+
+    @field_validator("remote_serde")
+    @classmethod
+    def validate_remote_serde(cls, v: str) -> str:
+        allowed = {"naive", "cachegen"}
+        if v not in allowed:
+            raise ValueError(
+                f"lmcache.remote_serde must be one of {allowed}, got '{v}'"
+            )
         return v
 
 
@@ -159,8 +170,25 @@ class GlobalLMCacheConfig(BaseModel):
     chunk_size: int = 256
 
 
+class RemoteModelConfig(BaseModel):
+    """An OpenAI-compatible upstream API exposed through the LiteLLM gateway.
+
+    Unlike InstanceConfig, a remote model runs no local process: it has no port,
+    no GPU footprint, and is never launched or health-gated. It only contributes
+    an entry to the generated LiteLLM model_list, routed to a hosted API.
+    """
+    id: str                       # gateway model_name clients call, e.g. "deepseek-v4-pro"
+    upstream_model: str           # provider-side model id, e.g. "deepseek-v4-pro"
+    api_base: str                 # e.g. "https://api.deepseek.com"
+    api_key_env: str              # env var NAME holding the key, e.g. "DEEPSEEK_API_KEY"
+    provider: str = "openai"      # LiteLLM prefix; DeepSeek is OpenAI-compatible
+    thinking: bool = False        # documents intent; see docs/deepseek.md for passthrough
+    description: str = ""
+
+
 class TunnelRegistry(BaseModel):
     instances: list[InstanceConfig]
+    remote_models: list[RemoteModelConfig] = Field(default_factory=list)
     litellm: LiteLLMGatewayConfig = Field(default_factory=LiteLLMGatewayConfig)
     lmcache: GlobalLMCacheConfig = Field(default_factory=GlobalLMCacheConfig)
     gpu: GPUConfig = Field(default_factory=GPUConfig)
@@ -175,10 +203,14 @@ class TunnelRegistry(BaseModel):
 
     @model_validator(mode="after")
     def validate_no_id_collisions(self) -> "TunnelRegistry":
-        ids = [inst.id for inst in self.instances]
+        # Local and remote ids share the LiteLLM model_name namespace, so both
+        # must be unique together — a client picks a model by this single id.
+        ids = [inst.id for inst in self.instances] + [
+            rm.id for rm in self.remote_models
+        ]
         dupes = sorted({i for i in ids if ids.count(i) > 1})
         if dupes:
-            raise ValueError(f"Duplicate instance IDs found: {dupes}")
+            raise ValueError(f"Duplicate model IDs found (instances + remote): {dupes}")
         return self
 
     @model_validator(mode="after")
@@ -193,8 +225,14 @@ class TunnelRegistry(BaseModel):
 
     @model_validator(mode="after")
     def validate_fallback_ids(self) -> "TunnelRegistry":
-        """Ensure every fallback ID references a real registered instance, not itself."""
-        valid_ids = {inst.id for inst in self.instances}
+        """Ensure every fallback ID references a real registered model, not itself.
+
+        Fallback targets may be local instances or remote models, so a local
+        model can escalate to a hosted API (e.g. overflow -> DeepSeek).
+        """
+        valid_ids = {inst.id for inst in self.instances} | {
+            rm.id for rm in self.remote_models
+        }
         for inst in self.instances:
             unknown = [fb for fb in inst.fallbacks if fb not in valid_ids]
             if unknown:
