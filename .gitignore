@@ -45,7 +45,9 @@ venv.bak/
 AGENTS.md
 CLAUDE.md
 MEMORY.md
-docs/
+docs/*
+!docs/lmcache.md
+!docs/deepseek.md
 
 # Test artifacts
 .coverage
