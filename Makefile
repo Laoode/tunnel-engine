@@ -75,6 +75,12 @@ test-unit: ## Run unit tests only (fast, no live services required)
 test-integration: ## Run integration tests (requires a running engine: make up, or serve + start)
 	$(PYTHON) -m pytest tests/integration/ -v -m integration
 
+test-tools: ## Tool-calling smoke test through the gateway (requires a running engine)
+	$(PYTHON) tests/services/tools/main.py
+
+bench-cache: ## KV-cache benchmark -> tests/services/kv_cache/RESULTS.md (requires a running engine)
+	$(PYTHON) tests/services/kv_cache/main.py
+
 lint: ## Lint with ruff
 	ruff check $(LINT_PATHS)
 
