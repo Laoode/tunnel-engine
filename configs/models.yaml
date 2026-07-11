@@ -35,7 +35,11 @@ instances:
     chat_template: configs/templates/qwen3.5-enhanced.jinja
     tool_parser: qwen3_xml
     reasoning_parser: qwen3
-    description: "Qwen 0.8B – Tool-calling bench model"
+    lmcache:
+      enabled: false  # Qwen3.5 is a hybrid-attention model; the LMCache KV connector
+                      # forces vLLM's hybrid KV manager off and the engine fails to start.
+                      # Hybrid models use vLLM's native prefix cache instead.
+    description: "Qwen 0.8B – Tool-calling bench model (hybrid attn; LMCache off)"
 
   - id: minicpm-1b
     model: openbmb/MiniCPM5-1B
@@ -87,6 +91,24 @@ instances:
   #   quantization: fp8
   #   tool_parser: hermes
   #   reasoning_parser: qwen3
+
+# Remote OpenAI-compatible upstreams, routed through the same :4000 gateway.
+# These run no local process (no port / GPU) and are never launched or health-gated.
+# Set DEEPSEEK_API_KEY in .env. A local instance may fall back to one of these
+# (e.g. fallbacks: [deepseek-v4-flash]) to escalate overflow / hard queries.
+remote_models:
+  - id: deepseek-v4-pro
+    upstream_model: deepseek-v4-pro
+    api_base: https://api.deepseek.com
+    api_key_env: DEEPSEEK_API_KEY
+    thinking: true
+    description: "DeepSeek V4 Pro – hosted, thinking-capable"
+
+  - id: deepseek-v4-flash
+    upstream_model: deepseek-v4-flash
+    api_base: https://api.deepseek.com
+    api_key_env: DEEPSEEK_API_KEY
+    description: "DeepSeek V4 Flash – hosted, fast/cheap"
 
 litellm:
   port: 4000

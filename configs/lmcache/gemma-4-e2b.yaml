@@ -2,10 +2,5 @@
 # Source : configs/models.yaml  |  Regenerate: make generate
 
 chunk_size: 256
-local_cpu:
-  enabled: true
-  max_cache_size: 20
-local_disk:
-  enabled: false
-  max_cache_size: 20
-  path: /tmp/lmcache/gemma-4-e2b
+local_cpu: true
+max_local_cpu_size: 20.0

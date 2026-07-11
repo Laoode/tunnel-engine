@@ -20,6 +20,7 @@ def _minimal_instance(**overrides) -> InstanceConfig:
 
 
 def test_base_command_for_minimal_instance():
+    # lmcache.enabled defaults to True, so the KV connector flag is present.
     cmd = build_serve_command(_minimal_instance())
     assert cmd == [
         "vllm", "serve", "org/test-model",
@@ -29,7 +30,19 @@ def test_base_command_for_minimal_instance():
         "--max-model-len", "16384",
         "--dtype", "auto",
         "--default-chat-template-kwargs", '{"enable_thinking": false}',
+        "--kv-transfer-config", '{"kv_connector": "LMCacheConnectorV1", "kv_role": "kv_both"}',
     ]
+
+
+def test_kv_transfer_config_present_when_lmcache_enabled():
+    cmd = build_serve_command(_minimal_instance(lmcache={"enabled": True}))
+    assert "--kv-transfer-config" in cmd
+    assert "LMCacheConnectorV1" in cmd[cmd.index("--kv-transfer-config") + 1]
+
+
+def test_kv_transfer_config_absent_when_lmcache_disabled():
+    cmd = build_serve_command(_minimal_instance(lmcache={"enabled": False}))
+    assert "--kv-transfer-config" not in cmd
 
 
 def test_quantization_flag_present_when_set():

@@ -114,9 +114,45 @@ def build_serve_command(inst: InstanceConfig) -> list[str]:
     if inst.reasoning_parser:
         cmd += ["--reasoning-parser", inst.reasoning_parser]
 
+    if inst.lmcache.enabled:
+        # Register LMCache as vLLM's KV connector so KV blocks are offloaded to /
+        # loaded from the LMCache tiers (CPU/disk/redis). Without this flag vLLM
+        # ignores LMCACHE_CONFIG_FILE entirely and only its in-GPU prefix cache runs.
+        # kv_both = this instance both stores and retrieves (single-node offload).
+        cmd += ["--kv-transfer-config",
+                json.dumps({"kv_connector": "LMCacheConnectorV1", "kv_role": "kv_both"})]
+
     cmd.extend(inst.extra_args)
 
     return cmd
+
+
+def _inject_redis_env(inst, env: dict) -> None:
+    """Set LMCACHE_REMOTE_URL/SERDE for a redis-backed instance from the environment.
+
+    The generated LMCache config file carries only non-secret fields; the Redis
+    host/port are environment-specific, so the remote URL is assembled here at
+    serve time from LMCACHE_REDIS_HOST/LMCACHE_REDIS_PORT. LMCache merges these
+    env vars on top of the config file. If the host is unset we warn and leave
+    the instance to degrade gracefully to its local CPU tier.
+
+    Args:
+        inst: The InstanceConfig being launched.
+        env: The environment dict passed to os.execvpe (mutated in place).
+    """
+    if inst.lmcache.backend != "redis":
+        return
+    host = env.get("LMCACHE_REDIS_HOST")
+    if not host:
+        print(
+            f"WARN: instance '{inst.id}' uses lmcache.backend=redis but "
+            "LMCACHE_REDIS_HOST is unset. Falling back to the local CPU tier only.",
+            file=sys.stderr,
+        )
+        return
+    port = env.get("LMCACHE_REDIS_PORT", "6379")
+    env["LMCACHE_REMOTE_URL"] = f"redis://{host}:{port}"
+    env["LMCACHE_REMOTE_SERDE"] = inst.lmcache.remote_serde
 
 
 def cmd_serve(instance_id: str) -> None:
@@ -153,6 +189,7 @@ def cmd_serve(instance_id: str) -> None:
         lmcache_cfg_path = Path(f"configs/lmcache/{inst.id}.yaml")
         if lmcache_cfg_path.exists():
             env["LMCACHE_CONFIG_FILE"] = str(lmcache_cfg_path)
+            _inject_redis_env(inst, env)
         else:
             print(
                 f"WARN: LMCache config not found at '{lmcache_cfg_path}'. "
@@ -229,6 +266,15 @@ def cmd_list() -> None:
             f"{inst.gpu_memory_utilization:<6}  {inst.tensor_parallel_size:<4}  "
             f"{inst.model}{fb}"
         )
+    if registry.remote_models:
+        print(f"\n{'REMOTE ID':<24}  {'PROVIDER':<10}  UPSTREAM  ->  API BASE")
+        print("-" * 72)
+        for rm in registry.remote_models:
+            print(
+                f"{rm.id:<24}  {rm.provider:<10}  "
+                f"{rm.upstream_model}  ->  {rm.api_base}"
+            )
+
     print(f"\n  Proxy -> :{registry.litellm.port}  "
           f"({registry.litellm.routing_strategy})\n")
 
