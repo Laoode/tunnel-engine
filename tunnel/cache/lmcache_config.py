@@ -1,10 +1,6 @@
-"""
-tunnel/cache/lmcache_config.py
-================================
-Generates per-instance LMCache config files under configs/lmcache/.
+"""Generates per-instance LMCache config files under configs/lmcache/.
 
-LMCache activates by LMCACHE_CONFIG_FILE=<path> env var before vLLM.
-The CLI (tunnel/cli.py) sets this automatically.
+LMCache activates via the LMCACHE_CONFIG_FILE env var, set by tunnel/cli.py.
 """
 from __future__ import annotations
 

@@ -1,20 +1,8 @@
-"""
-tunnel/orchestrator.py
-======================
-Fleet orchestration for background vLLM instances: launch, track, and stop
-via pidfiles instead of one terminal per instance.
+"""Fleet orchestration for background vLLM instances via pidfiles.
 
-Each instance launched by `tunnel up` runs as `python -m tunnel.cli serve
-<id>` in its own process group (`start_new_session=True`), logging to
-`logs/<id>.log` and recording its pid in `.tunnel/<id>.pid`. `tunnel down`
-uses those pidfiles to SIGTERM (then SIGKILL if needed) the whole process
-group, since vLLM spawns worker subprocesses under the launcher.
-
-Usage
------
-  pid = launch_instance(inst)
-  ...
-  outcome = stop_instance(inst.id)  # "stopped" | "killed" | "stale" | "absent"
+Each instance runs as `python -m tunnel.cli serve <id>` in its own process
+group, logging to `logs/<id>.log` with its pid in `.tunnel/<id>.pid`.
+Stops SIGTERM the whole group (vLLM spawns workers), escalating to SIGKILL.
 """
 from __future__ import annotations
 
@@ -90,6 +78,27 @@ def adopt_instance(inst_id: str, pid: int) -> None:
     _write_pidfile(inst_id, pid)
 
 
+def find_listening_pids(ports: set[int]) -> dict[int, int]:
+    """Map each port in `ports` to the pid listening on it, in one system scan.
+
+    Args:
+        ports: TCP ports to look up.
+
+    Returns:
+        Dict of port -> pid for ports with a LISTEN-state process; ports with
+        no listener (or a listener whose pid is not visible) are absent.
+    """
+    listeners: dict[int, int] = {}
+    for conn in psutil.net_connections(kind="tcp"):
+        if (
+            conn.status == psutil.CONN_LISTEN
+            and conn.laddr.port in ports
+            and conn.pid is not None
+        ):
+            listeners[conn.laddr.port] = conn.pid
+    return listeners
+
+
 def find_listening_pid(port: int) -> int | None:
     """Find the pid of the process listening on a local TCP port.
 
@@ -97,13 +106,9 @@ def find_listening_pid(port: int) -> int | None:
         port: The TCP port to check.
 
     Returns:
-        The pid of the process in LISTEN state on `port`, or None if no
-        such process is found.
+        The pid in LISTEN state on `port`, or None if no visible listener.
     """
-    for conn in psutil.net_connections(kind="tcp"):
-        if conn.status == psutil.CONN_LISTEN and conn.laddr.port == port:
-            return conn.pid
-    return None
+    return find_listening_pids({port}).get(port)
 
 
 def is_alive(pid: int) -> bool:
@@ -156,13 +161,8 @@ def stop_instance(inst_id: str, term_wait_s: float = 10.0) -> str:
     Returns:
         One of "stopped" (SIGTERM sufficed), "killed" (needed SIGKILL),
         "stale" (pidfile pointed at a dead process), or "absent" (no
-        pidfile).
-
-    Note:
-        A pid recorded via `adopt_instance` may not be a process-group
-        leader (it wasn't spawned with `start_new_session=True` by us), so
-        `os.killpg` can raise `ProcessLookupError` for it — the existing
-        killpg-then-kill fallback below already handles that case.
+        pidfile). Adopted pids may not be process-group leaders, so killpg
+        falls back to a plain kill.
     """
     pid_path = PID_DIR / f"{inst_id}.pid"
     pidfile_existed = pid_path.exists()

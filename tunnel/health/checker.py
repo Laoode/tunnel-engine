@@ -1,13 +1,7 @@
-"""
-tunnel/health/checker.py
-=========================
-Concurrently polls all registered vLLM instances and returns structured results.
+"""Concurrent health polling of registered vLLM instances + optional GPU stats.
 
-Design:
-  - All checks run in parallel (asyncio.gather) — N instances ~ same wall time as 1.
-  - Returns typed dataclasses, not raw dicts — callers can pattern-match on status.
-  - format_report() is presentation-only; keep it separate from check logic.
-  - collect_gpu_stats() is optional — degrades gracefully if pynvml is unavailable.
+Checks run in parallel and return typed dataclasses; format_report() is
+presentation-only; collect_gpu_stats() degrades gracefully without pynvml.
 """
 from __future__ import annotations
 
@@ -93,28 +87,22 @@ async def _check_one(
 ) -> InstanceHealth:
     url = f"http://localhost:{port}/health"
     t0 = time.monotonic()
+    latency_ms = None
     try:
         response = await client.get(url, timeout=timeout)
         latency_ms = round((time.monotonic() - t0) * 1000, 1)
-        if response.status_code == 200:
-            return InstanceHealth(
-                id=instance_id, port=port, model=model,
-                status=InstanceStatus.OK, latency_ms=latency_ms,
-            )
-        return InstanceHealth(
-            id=instance_id, port=port, model=model,
-            status=InstanceStatus.DOWN, error=f"HTTP {response.status_code}",
-        )
+        error = None if response.status_code == 200 else f"HTTP {response.status_code}"
     except httpx.TimeoutException:
-        return InstanceHealth(
-            id=instance_id, port=port, model=model,
-            status=InstanceStatus.DOWN, error="timeout",
-        )
+        error = "timeout"
     except Exception as exc:
-        return InstanceHealth(
-            id=instance_id, port=port, model=model,
-            status=InstanceStatus.DOWN, error=str(exc),
-        )
+        error = str(exc)
+
+    return InstanceHealth(
+        id=instance_id, port=port, model=model,
+        status=InstanceStatus.OK if error is None else InstanceStatus.DOWN,
+        latency_ms=latency_ms if error is None else None,
+        error=error,
+    )
 
 
 async def check_all(

@@ -21,6 +21,7 @@ from tunnel.orchestrator import (
     PID_DIR,
     adopt_instance,
     find_listening_pid,
+    find_listening_pids,
     is_alive,
     launch_instance,
     read_pid,
@@ -189,3 +190,23 @@ def test_find_listening_pid_none_when_no_match(monkeypatch):
     monkeypatch.setattr(psutil, "net_connections", lambda kind: conns)
 
     assert find_listening_pid(9999) is None
+
+
+def test_find_listening_pids_batch_single_scan(monkeypatch):
+    conns = [
+        _FakeConn(psutil.CONN_LISTEN, 8000, 111),
+        _FakeConn(psutil.CONN_LISTEN, 8001, 222),
+        _FakeConn(psutil.CONN_ESTABLISHED, 4000, 333),  # not LISTEN
+        _FakeConn(psutil.CONN_LISTEN, 8002, None),      # pid not visible
+    ]
+    scan_count = 0
+
+    def _fake_net_connections(kind):
+        nonlocal scan_count
+        scan_count += 1
+        return conns
+
+    monkeypatch.setattr(psutil, "net_connections", _fake_net_connections)
+
+    assert find_listening_pids({8000, 8001, 4000, 8002, 9999}) == {8000: 111, 8001: 222}
+    assert scan_count == 1

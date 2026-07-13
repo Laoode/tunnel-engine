@@ -1,9 +1,6 @@
-"""
-Tunnel Engine CLI
-=================
-Single entry point for all dev operations.
+"""Tunnel Engine CLI: single entry point for all dev operations.
 
-Usage:
+Usage (each command also has a Makefile target of the same name):
   python -m tunnel.cli serve   <instance-id>   Launch a vLLM instance
   python -m tunnel.cli health                  Poll all instance health + GPU memory
   python -m tunnel.cli generate                Rebuild all derived configs
@@ -13,16 +10,6 @@ Usage:
   python -m tunnel.cli up                      Launch all instances, health-gate, start proxy
   python -m tunnel.cli stop    <instance-id>   Stop ONE instance, leave the rest + proxy running
   python -m tunnel.cli down                    Stop every instance and the proxy
-
-Or via Makefile:
-  make serve ID=<instance-id>
-  make health
-  make generate
-  make proxy
-  make start
-  make up
-  make stop ID=<instance-id>
-  make down
 """
 from __future__ import annotations
 
@@ -41,29 +28,65 @@ from tunnel.orchestrator import (
     PID_DIR,
     adopt_instance,
     find_listening_pid,
+    find_listening_pids,
     is_alive,
     launch_instance,
     read_pid,
     stop_instance,
 )
-from tunnel.registry import InstanceConfig, load_registry
+from tunnel.registry import InstanceConfig, TunnelRegistry, load_registry
 from tunnel.startup import DEFAULT_TIMEOUT_S, wait_for_all, wait_for_one
 
 LITELLM_CONFIG = "configs/litellm/config.yaml"
 
 
 def registry_path() -> str:
-    """Return the active registry file path.
+    """Return the active registry file path from TUNNEL_REGISTRY.
 
-    Reads the TUNNEL_REGISTRY environment variable at call time (not import
-    time), so callers get the value in effect at the moment the command
-    runs and tests can monkeypatch it per-case.
+    Read at call time (not import time) so tests can monkeypatch per-case.
 
     Returns:
-        Path to the registry YAML file. Defaults to "configs/models.yaml"
-        when TUNNEL_REGISTRY is unset.
+        Path to the registry YAML; "configs/models.yaml" when the env is unset.
     """
     return os.environ.get("TUNNEL_REGISTRY", "configs/models.yaml")
+
+
+def _require_instance(registry: TunnelRegistry, instance_id: str) -> InstanceConfig:
+    """Return the instance with the given id, or exit(1) listing available ids.
+
+    Args:
+        registry: Loaded TunnelRegistry.
+        instance_id: The registry id to look up.
+
+    Returns:
+        The matching InstanceConfig. Does not return on a miss.
+    """
+    inst = registry.get_instance(instance_id)
+    if inst is None:
+        available = [i.id for i in registry.instances]
+        print(
+            f"ERROR: Instance '{instance_id}' not found in {registry_path()}.\n"
+            f"  Available: {available}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    return inst
+
+
+def _stop_untracked(inst_id: str, port: int, pid: int) -> None:
+    """Adopt an untracked listener into a pidfile, then stop it.
+
+    Args:
+        inst_id: Instance id (or "litellm-proxy") to record the pid under.
+        port: The port the process is listening on, for the report line.
+        pid: The live untracked pid.
+    """
+    adopt_instance(inst_id, pid)
+    outcome = stop_instance(inst_id)
+    print(
+        f".  {inst_id}  {outcome} (untracked on :{port}, pid {pid})",
+        file=sys.stderr,
+    )
 
 
 def build_serve_command(inst: InstanceConfig) -> list[str]:
@@ -127,18 +150,16 @@ def build_serve_command(inst: InstanceConfig) -> list[str]:
     return cmd
 
 
-def _inject_redis_env(inst, env: dict) -> None:
-    """Set LMCACHE_REMOTE_URL/SERDE for a redis-backed instance from the environment.
+def _inject_redis_env(inst: InstanceConfig, env: dict) -> None:
+    """Assemble LMCACHE_REMOTE_URL/SERDE into `env` from LMCACHE_REDIS_HOST/PORT.
 
-    The generated LMCache config file carries only non-secret fields; the Redis
-    host/port are environment-specific, so the remote URL is assembled here at
-    serve time from LMCACHE_REDIS_HOST/LMCACHE_REDIS_PORT. LMCache merges these
-    env vars on top of the config file. If the host is unset we warn and leave
-    the instance to degrade gracefully to its local CPU tier.
+    Redis host/port are environment-specific (never committed); LMCache merges
+    these env vars over the config file. Warns and degrades to the local CPU
+    tier when the host is unset.
 
     Args:
         inst: The InstanceConfig being launched.
-        env: The environment dict passed to os.execvpe (mutated in place).
+        env: Environment dict passed to os.execvpe, mutated in place.
     """
     if inst.lmcache.backend != "redis":
         return
@@ -162,18 +183,8 @@ def cmd_serve(instance_id: str) -> None:
     tensor-parallel-size, and extra_args passthrough.
     Replaces the current process via os.execvpe — no return.
     """
-    reg_path = registry_path()
-    registry = load_registry(reg_path)
-    inst = registry.get_instance(instance_id)
-
-    if inst is None:
-        available = [i.id for i in registry.instances]
-        print(
-            f"ERROR: Instance '{instance_id}' not found in {reg_path}.\n"
-            f"  Available: {available}",
-            file=sys.stderr,
-        )
-        sys.exit(1)
+    registry = load_registry(registry_path())
+    inst = _require_instance(registry, instance_id)
 
     if inst.chat_template and not Path(inst.chat_template).exists():
         print(
@@ -339,28 +350,12 @@ def cmd_start(args: list[str]) -> None:
 def cmd_up(args: list[str]) -> None:
     """Launch every registered instance, health-gate, then exec the proxy.
 
-    Launches instances SEQUENTIALLY by default (in registry order): each
-    newly-launched instance is health-gated before the next one starts. This
-    exists because concurrent vLLM engine startups corrupt each other's GPU
-    memory profiling — each process observes the other's in-flight
-    allocations as externally-used memory and computes a negative or
-    insufficient KV cache budget, crashing with "No available memory for the
-    cache blocks" even though the static gpu_memory_utilization split fits
-    (reproduced with two Qwen models at 0.35 + 0.45 utilization on an empty
-    24 GB GPU). Pass --parallel to restore the previous launch-all-then-gate
-    behavior for fleets whose models profile fast enough to avoid this.
-
-    Skips instances that already have a live tracked pid. If a port is
-    already being listened on by an untracked process (e.g. started
-    manually via `make serve`), adopts it into the pidfile instead of
-    launching a duplicate onto the same port/GPU.
-
-    In sequential mode, an instance whose health wait fails is reported to
-    stderr and the loop moves on to the next instance — a broken model
-    shouldn't block the rest of the fleet from launching. The final
-    wait_for_all() gate below (pid-aware, so an already-dead instance fails
-    fast instead of stalling to --timeout) still catches it and exits
-    nonzero.
+    Sequential by default: concurrent vLLM startups corrupt each other's GPU
+    memory profiling and crash with "No available memory for the cache blocks"
+    (--parallel restores launch-all-then-gate). Live tracked pids are skipped;
+    untracked port listeners are adopted instead of double-launched. A failed
+    health wait doesn't block the rest of the fleet; the final pid-aware
+    wait_for_all() gate still catches it and exits nonzero.
 
     Args:
         args: Optional ["--timeout", "<seconds>", "--parallel"].
@@ -394,6 +389,9 @@ def cmd_up(args: list[str]) -> None:
             print(f".  {inst.id}  already running (pid {pid})", file=sys.stderr)
             launched[inst.id] = pid
             continue
+        # Probed per iteration, not snapshotted upfront: sequential health-gating
+        # can take minutes, and a listener appearing mid-run must still be
+        # adopted instead of double-launched onto its port.
         listening_pid = find_listening_pid(inst.port)
         if listening_pid is not None:
             adopt_instance(inst.id, listening_pid)
@@ -440,20 +438,16 @@ def cmd_up(args: list[str]) -> None:
 def cmd_down(_: list[str]) -> None:
     """Stop everything this engine started, tracked or not, and free the GPU.
 
-    Three passes so nothing leaks a GPU allocation or a port:
-      1. Tracked pidfiles (.tunnel/*.pid) - ground truth for what `up`
-         launched; still stops those instances even if the registry was
-         edited between `up` and `down` (e.g. swapping bench models).
-      2. Untracked listeners on each registry instance port - catches
-         instances started foreground via `make serve`, which exec into
-         vLLM without ever writing a pidfile.
-      3. The LiteLLM proxy, if something is listening on litellm.port.
-
-    Passes 2 and 3 adopt the found pid into a pidfile first, then reuse
-    stop_instance so the same SIGTERM-then-SIGKILL escalation applies to
-    everything.
+    Three passes so nothing leaks a GPU allocation or a port: tracked pidfiles
+    (ground truth for what `up` launched, even if the registry changed since),
+    untracked listeners on registry instance ports (`make serve` never writes
+    a pidfile), and the LiteLLM proxy. Untracked pids are adopted first so
+    stop_instance's SIGTERM-then-SIGKILL escalation applies to everything.
     """
     registry = load_registry(registry_path())
+    listeners = find_listening_pids(
+        {inst.port for inst in registry.instances} | {registry.litellm.port}
+    )
     stopped = 0
 
     for pidfile in sorted(PID_DIR.glob("*.pid")):
@@ -463,24 +457,14 @@ def cmd_down(_: list[str]) -> None:
         stopped += 1
 
     for inst in registry.instances:
-        listening_pid = find_listening_pid(inst.port)
+        listening_pid = listeners.get(inst.port)
         if listening_pid is not None and is_alive(listening_pid):
-            adopt_instance(inst.id, listening_pid)
-            outcome = stop_instance(inst.id)
-            print(
-                f".  {inst.id}  {outcome} (untracked on :{inst.port}, pid {listening_pid})",
-                file=sys.stderr,
-            )
+            _stop_untracked(inst.id, inst.port, listening_pid)
             stopped += 1
 
-    proxy_pid = find_listening_pid(registry.litellm.port)
+    proxy_pid = listeners.get(registry.litellm.port)
     if proxy_pid is not None and is_alive(proxy_pid):
-        adopt_instance("litellm-proxy", proxy_pid)
-        outcome = stop_instance("litellm-proxy")
-        print(
-            f".  litellm-proxy  {outcome} (:{registry.litellm.port}, pid {proxy_pid})",
-            file=sys.stderr,
-        )
+        _stop_untracked("litellm-proxy", registry.litellm.port, proxy_pid)
         stopped += 1
 
     if stopped == 0:
@@ -488,33 +472,17 @@ def cmd_down(_: list[str]) -> None:
 
 
 def cmd_stop(instance_id: str) -> None:
-    """Stop ONE instance without touching the rest of the fleet or the proxy.
+    """Stop ONE instance, leaving the rest of the fleet and the proxy running.
 
-    Use this to retire a single model while others keep serving production
-    traffic. Each instance is a separate process on its own port and the
-    LiteLLM proxy is a separate process, so stopping one leaves the surviving
-    models and the gateway running with zero downtime. Calls the proxy routes
-    to the stopped model will error until it is brought back with
-    `make serve ID=<id>` (or `make up`); the proxy still advertises it in
-    /v1/models until you edit the registry and regenerate.
-
-    Resolves the target the same way `cmd_down` does: a tracked pidfile if the
-    instance was launched via `up`, plus any untracked foreground process
-    listening on its port (`make serve`).
+    Resolves the target like `cmd_down`: tracked pidfile plus any untracked
+    listener on its port. The proxy keeps advertising the stopped model in
+    /v1/models until the registry is edited and regenerated.
 
     Args:
         instance_id: The registry id of the instance to stop.
     """
     registry = load_registry(registry_path())
-    inst = registry.get_instance(instance_id)
-    if inst is None:
-        available = [i.id for i in registry.instances]
-        print(
-            f"ERROR: Instance '{instance_id}' not found in {registry_path()}.\n"
-            f"  Available: {available}",
-            file=sys.stderr,
-        )
-        sys.exit(1)
+    inst = _require_instance(registry, instance_id)
 
     stopped = False
     if read_pid(inst.id) is not None:
@@ -524,12 +492,7 @@ def cmd_stop(instance_id: str) -> None:
 
     listening_pid = find_listening_pid(inst.port)
     if listening_pid is not None and is_alive(listening_pid):
-        adopt_instance(inst.id, listening_pid)
-        outcome = stop_instance(inst.id)
-        print(
-            f".  {inst.id}  {outcome} (untracked on :{inst.port}, pid {listening_pid})",
-            file=sys.stderr,
-        )
+        _stop_untracked(inst.id, inst.port, listening_pid)
         stopped = True
 
     if not stopped:

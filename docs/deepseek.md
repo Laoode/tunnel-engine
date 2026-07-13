@@ -28,7 +28,6 @@ remote_models:
     upstream_model: deepseek-v4-pro
     api_base: https://api.deepseek.com
     api_key_env: DEEPSEEK_API_KEY   # env var NAME, not the secret
-    thinking: true
     description: "DeepSeek V4 Pro – hosted, thinking-capable"
 ```
 
@@ -58,8 +57,7 @@ DEEPSEEK_API_KEY=sk-...
 | `api_base` | yes | – | Upstream base URL. |
 | `api_key_env` | yes | – | Name of the env var holding the key. |
 | `provider` | no | `openai` | LiteLLM prefix. DeepSeek is OpenAI-compatible. |
-| `thinking` | no | `false` | Documents intent; passthrough is per-request (below). |
-| `description` | no | `""` | Free text. |
+| `description` | no | `""` | Free text. Thinking passthrough is per-request (below), not a schema field. |
 
 Remote models are exempt from port-collision, GPU-budget, and health-gating logic (they are not
 in `registry.instances`). A **local instance may fall back to a remote model** — e.g.

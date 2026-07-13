@@ -1,24 +1,8 @@
-"""
-tunnel/startup.py
-=================
-Health-gated startup: polls vLLM instances until all respond healthy,
-then returns control so the caller can launch the LiteLLM proxy.
+"""Health-gated startup: poll vLLM instances until all respond healthy.
 
-Production failure mode prevented
-----------------------------------
-If LiteLLM starts before vLLM finishes loading a model (~30-120s on cold
-start), its initial health check gets connection refused. LiteLLM marks the
-model as failed and enters a 60-second cooldown — so the first minute of
-traffic errors out even after vLLM comes up.
-
-This module blocks until every registered instance is healthy (or a per-
-instance timeout expires), then hands off to cmd_proxy().
-
-Usage
------
-  result = asyncio.run(wait_for_all(registry))
-  if result.ready:
-      cmd_proxy()  # exec()s into LiteLLM — no return
+Prevents LiteLLM's cooldown failure mode: started before vLLM finishes a cold
+load (~30-120s), LiteLLM marks the model failed and enters a 60s cooldown, so
+the first minute of traffic errors even after vLLM comes up.
 """
 from __future__ import annotations
 

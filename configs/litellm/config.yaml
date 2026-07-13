@@ -3,40 +3,15 @@
 # Regenerate      : make generate
 
 model_list:
-- model_name: qwen3.5-0.8b
+- model_name: qwen-0.8b
   litellm_params:
     model: openai/Qwen/Qwen3.5-0.8B
     api_base: http://localhost:8000/v1
     api_key: none
-- model_name: qwen3.5-2b
-  litellm_params:
-    model: openai/Qwen/Qwen3.5-2B
-    api_base: http://localhost:8001/v1
-    api_key: none
-- model_name: qwen3.5-4b
-  litellm_params:
-    model: openai/Qwen/Qwen3.5-4B
-    api_base: http://localhost:8002/v1
-    api_key: none
-- model_name: gemma-4-e2b
-  litellm_params:
-    model: openai/google/gemma-4-E2B-it
-    api_base: http://localhost:8003/v1
-    api_key: none
-- model_name: gemma-4-e4b
-  litellm_params:
-    model: openai/google/gemma-4-E4B-it
-    api_base: http://localhost:8004/v1
-    api_key: none
-- model_name: lfm2.5-8b-a1b
-  litellm_params:
-    model: openai/LiquidAI/LFM2.5-8B-A1B
-    api_base: http://localhost:8005/v1
-    api_key: none
-- model_name: minicpm5-1b
+- model_name: minicpm-1b
   litellm_params:
     model: openai/openbmb/MiniCPM5-1B
-    api_base: http://localhost:8006/v1
+    api_base: http://localhost:8001/v1
     api_key: none
 - model_name: deepseek-v4-pro
   litellm_params:

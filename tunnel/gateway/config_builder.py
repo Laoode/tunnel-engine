@@ -1,10 +1,6 @@
-"""
-tunnel/gateway/config_builder.py
-=================================
-Generates configs/litellm/config.yaml from the TunnelRegistry.
+"""Generates configs/litellm/config.yaml from the TunnelRegistry.
 
-Design: pure functions only. build_litellm_config() takes a registry and
-returns a plain dict — testable without touching the filesystem.
+build_litellm_config() is a pure registry -> dict function;
 write_litellm_config() is the I/O wrapper.
 """
 from __future__ import annotations

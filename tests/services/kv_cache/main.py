@@ -1,25 +1,15 @@
-"""
-tests/services/kv_cache/main.py
-===============================
-Standalone KV-cache benchmark against the Tunnel Engine gateway.
+"""Standalone KV-cache benchmark against the Tunnel Engine gateway (not pytest).
 
-Not a pytest module -- run it directly once the fleet is up (make up):
+Run once the fleet is up (make up):
 
   python tests/services/kv_cache/main.py                 # every registered target
   python tests/services/kv_cache/main.py minicpm-1b      # only these ids
   N_PARAS=85 N_PROMPTS=10 python tests/services/kv_cache/main.py
 
-What it does: for each target model it sends N_PROMPTS unique long-prefix
-prompts twice -- a cold round (KV computed from scratch) then a warm round
-(identical prompts, so the long prefix's KV can be reused). It measures
-time-to-first-token (TTFT), which is dominated by prefill, so a working KV
-cache makes the warm round's TTFT collapse. Results print to stdout and are
-written to tests/services/kv_cache/RESULTS.md.
-
-Targets are read from the registry (configs/models.yaml or TUNNEL_REGISTRY):
-every local instance, plus any remote_models entry whose api_key_env is set in
-the environment. No hardcoded model list. See docs/lmcache.md for how LMCache is
-wired and why hybrid-attention models are excluded.
+Sends N_PROMPTS unique long-prefix prompts twice per target (cold then warm)
+and measures TTFT; a working KV cache makes the warm round's TTFT collapse.
+Targets come from the registry (local instances + remote_models whose
+api_key_env is set). Results -> stdout + RESULTS.md. See docs/lmcache.md.
 """
 from __future__ import annotations
 

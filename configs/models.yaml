@@ -48,7 +48,7 @@ instances:
     tool_parser: minicpm5
     description: "MiniCPM 1B – Tool-calling bench model"
 
-  # ── Add more instances below 
+  # Add more instances below. Examples:
   #
   # Standard model:
   # - id: llama-3b
@@ -101,7 +101,6 @@ remote_models:
     upstream_model: deepseek-v4-pro
     api_base: https://api.deepseek.com
     api_key_env: DEEPSEEK_API_KEY
-    thinking: true
     description: "DeepSeek V4 Pro – hosted, thinking-capable"
 
   - id: deepseek-v4-flash
@@ -115,8 +114,3 @@ litellm:
   master_key: "os.environ/LITELLM_MASTER_KEY"
   routing_strategy: least-busy
   prometheus: true  # set to true to expose /metrics grafana dashboard
-
-lmcache:
-  backend: cpu
-  max_cache_size_gb: 20
-  chunk_size: 256

@@ -1,15 +1,7 @@
-"""
-tunnel/registry.py
-==================
-Loads and validates the model registry from configs/models.yaml.
+"""Loads and validates the model registry from configs/models.yaml.
 
-This is the foundation layer. Every other module imports from here.
-Nothing else should read raw YAML — go through load_registry().
-
-Design principles:
-  - Pydantic validates at load time: fail fast, fail loudly.
-  - _deep_merge applies defaults so instance blocks stay concise.
-  - Pure data classes only — no side effects, no I/O except load_registry().
+Foundation layer: nothing else reads raw YAML; go through load_registry(),
+which merges defaults into instance blocks and fail-fast validates via Pydantic.
 """
 from __future__ import annotations
 
@@ -148,26 +140,13 @@ class LiteLLMGatewayConfig(BaseModel):
     def resolved_master_key(self) -> Optional[str]:
         """Master key with an ``os.environ/`` reference resolved from the environment.
 
-        The registry stores the key as a reference (e.g.
-        ``os.environ/LITELLM_MASTER_KEY``) so no secret is committed, and
-        LiteLLM resolves it at proxy boot. Clients that call the proxy (health
-        checks, the tool smoke test) must authenticate with the same resolved
-        value, so this mirrors that resolution. Requires the referenced env var
-        to be present (load ``.env`` first).
-
-        Returns:
-            The resolved key; a plain literal key unchanged; or None when the
-            key is unset or the referenced env var is not set.
+        Mirrors LiteLLM's own resolution so proxy clients (health checks, smoke
+        tests) can authenticate with the same value. Returns the literal key
+        unchanged, or None when unset / the referenced env var is absent.
         """
         if self.master_key and self.master_key.startswith("os.environ/"):
             return os.environ.get(self.master_key.split("/", 1)[1])
         return self.master_key
-
-
-class GlobalLMCacheConfig(BaseModel):
-    backend: str = "cpu"
-    max_cache_size_gb: int = 20
-    chunk_size: int = 256
 
 
 class RemoteModelConfig(BaseModel):
@@ -182,7 +161,6 @@ class RemoteModelConfig(BaseModel):
     api_base: str                 # e.g. "https://api.deepseek.com"
     api_key_env: str              # env var NAME holding the key, e.g. "DEEPSEEK_API_KEY"
     provider: str = "openai"      # LiteLLM prefix; DeepSeek is OpenAI-compatible
-    thinking: bool = False        # documents intent; see docs/deepseek.md for passthrough
     description: str = ""
 
 
@@ -190,7 +168,6 @@ class TunnelRegistry(BaseModel):
     instances: list[InstanceConfig]
     remote_models: list[RemoteModelConfig] = Field(default_factory=list)
     litellm: LiteLLMGatewayConfig = Field(default_factory=LiteLLMGatewayConfig)
-    lmcache: GlobalLMCacheConfig = Field(default_factory=GlobalLMCacheConfig)
     gpu: GPUConfig = Field(default_factory=GPUConfig)
 
     @model_validator(mode="after")
