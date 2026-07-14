@@ -27,6 +27,7 @@ import httpx
 from tunnel.cache.lmcache_config import write_lmcache_configs
 from tunnel.gateway.config_builder import write_litellm_config
 from tunnel.gateway.keys import KEYS_ENV_PATH, fetch_key_overview, sync_keys
+from tunnel.observability.prometheus_config import write_prometheus_config
 from tunnel.health.checker import check_all, collect_gpu_stats, format_report
 from tunnel.logging import configure_logging
 from tunnel.orchestrator import (
@@ -250,6 +251,9 @@ def cmd_generate() -> None:
     lmcache_paths = write_lmcache_configs(registry)
     for p in lmcache_paths:
         print(f"  LMCache config    -> {p}")
+
+    prometheus_path = write_prometheus_config(registry)
+    print(f"  Prometheus config -> {prometheus_path}")
 
     print(f"\n  {len(registry.instances)} instance(s) registered:")
     for inst in registry.instances:

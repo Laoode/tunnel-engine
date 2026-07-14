@@ -1,0 +1,539 @@
+{
+  "uid": "tunnel-engine",
+  "title": "Tunnel Engine",
+  "tags": [
+    "vllm",
+    "tunnel"
+  ],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "10s",
+  "time": {
+    "from": "now-30m",
+    "to": "now"
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Requests running / waiting",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "tunnel-prom"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 0
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "fillOpacity": 8
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "tunnel-prom"
+          },
+          "expr": "vllm:num_requests_running",
+          "legendFormat": "{{instance_id}} running",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "tunnel-prom"
+          },
+          "expr": "vllm:num_requests_waiting",
+          "legendFormat": "{{instance_id}} waiting",
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "KV cache usage",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "tunnel-prom"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 0
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "custom": {
+            "fillOpacity": 8
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "tunnel-prom"
+          },
+          "expr": "vllm:kv_cache_usage_perc",
+          "legendFormat": "{{instance_id}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "TTFT (p50 / p95 / p99)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "tunnel-prom"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "fillOpacity": 8
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "tunnel-prom"
+          },
+          "expr": "histogram_quantile(0.5, sum by (le, instance_id) (rate(vllm:time_to_first_token_seconds_bucket[1m])))",
+          "legendFormat": "{{instance_id}} p50",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "tunnel-prom"
+          },
+          "expr": "histogram_quantile(0.95, sum by (le, instance_id) (rate(vllm:time_to_first_token_seconds_bucket[1m])))",
+          "legendFormat": "{{instance_id}} p95",
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "tunnel-prom"
+          },
+          "expr": "histogram_quantile(0.99, sum by (le, instance_id) (rate(vllm:time_to_first_token_seconds_bucket[1m])))",
+          "legendFormat": "{{instance_id}} p99",
+          "refId": "C"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "Inter-token latency (p50 / p99)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "tunnel-prom"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "fillOpacity": 8
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "tunnel-prom"
+          },
+          "expr": "histogram_quantile(0.5, sum by (le, instance_id) (rate(vllm:inter_token_latency_seconds_bucket[1m])))",
+          "legendFormat": "{{instance_id}} p50",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "tunnel-prom"
+          },
+          "expr": "histogram_quantile(0.99, sum by (le, instance_id) (rate(vllm:inter_token_latency_seconds_bucket[1m])))",
+          "legendFormat": "{{instance_id}} p99",
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "E2E request latency (p50 / p95)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "tunnel-prom"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 16
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "fillOpacity": 8
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "tunnel-prom"
+          },
+          "expr": "histogram_quantile(0.5, sum by (le, instance_id) (rate(vllm:e2e_request_latency_seconds_bucket[1m])))",
+          "legendFormat": "{{instance_id}} p50",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "tunnel-prom"
+          },
+          "expr": "histogram_quantile(0.95, sum by (le, instance_id) (rate(vllm:e2e_request_latency_seconds_bucket[1m])))",
+          "legendFormat": "{{instance_id}} p95",
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Queue time (p50 / p95)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "tunnel-prom"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 16
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "fillOpacity": 8
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "tunnel-prom"
+          },
+          "expr": "histogram_quantile(0.5, sum by (le, instance_id) (rate(vllm:request_queue_time_seconds_bucket[1m])))",
+          "legendFormat": "{{instance_id}} p50",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "tunnel-prom"
+          },
+          "expr": "histogram_quantile(0.95, sum by (le, instance_id) (rate(vllm:request_queue_time_seconds_bucket[1m])))",
+          "legendFormat": "{{instance_id}} p95",
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Token throughput",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "tunnel-prom"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 24
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "fillOpacity": 8
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "tunnel-prom"
+          },
+          "expr": "sum by (instance_id) (rate(vllm:prompt_tokens_total[1m]))",
+          "legendFormat": "{{instance_id}} prompt tok/s",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "tunnel-prom"
+          },
+          "expr": "sum by (instance_id) (rate(vllm:generation_tokens_total[1m]))",
+          "legendFormat": "{{instance_id}} gen tok/s",
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "Preemptions (priority scheduling evidence)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "tunnel-prom"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 24
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "fillOpacity": 8
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "tunnel-prom"
+          },
+          "expr": "sum by (instance_id) (increase(vllm:num_preemptions_total[5m]))",
+          "legendFormat": "{{instance_id}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "Prompt tokens per request (p50 / p95)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "tunnel-prom"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 32
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "fillOpacity": 8
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "tunnel-prom"
+          },
+          "expr": "histogram_quantile(0.5, sum by (le, instance_id) (rate(vllm:request_prompt_tokens_bucket[1m])))",
+          "legendFormat": "{{instance_id}} p50",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "tunnel-prom"
+          },
+          "expr": "histogram_quantile(0.95, sum by (le, instance_id) (rate(vllm:request_prompt_tokens_bucket[1m])))",
+          "legendFormat": "{{instance_id}} p95",
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "id": 10,
+      "type": "timeseries",
+      "title": "Generation tokens per request (p50 / p95)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "tunnel-prom"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 32
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "fillOpacity": 8
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "tunnel-prom"
+          },
+          "expr": "histogram_quantile(0.5, sum by (le, instance_id) (rate(vllm:request_generation_tokens_bucket[1m])))",
+          "legendFormat": "{{instance_id}} p50",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "tunnel-prom"
+          },
+          "expr": "histogram_quantile(0.95, sum by (le, instance_id) (rate(vllm:request_generation_tokens_bucket[1m])))",
+          "legendFormat": "{{instance_id}} p95",
+          "refId": "B"
+        }
+      ]
+    }
+  ]
+}

@@ -64,3 +64,5 @@ pids/
 
 # Lock file (managed by uv, can regenerate)
 # uv.lock
+# loadgen artifacts (results + plots are per-run outputs)
+tests/services/loadgen/results/

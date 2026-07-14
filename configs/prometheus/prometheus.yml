@@ -1,0 +1,19 @@
+# AUTO-GENERATED — do not edit manually.
+# Source of truth : configs/models.yaml
+# Regenerate      : make generate
+
+global:
+  scrape_interval: 5s
+scrape_configs:
+- job_name: vllm
+  static_configs:
+  - targets:
+    - localhost:8000
+    labels:
+      instance_id: qwen-0.8b
+      model: Qwen/Qwen3.5-0.8B
+  - targets:
+    - localhost:8001
+    labels:
+      instance_id: minicpm-1b
+      model: openbmb/MiniCPM5-1B

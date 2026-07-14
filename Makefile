@@ -9,7 +9,7 @@ export TUNNEL_REGISTRY := $(REGISTRY)
 .DEFAULT_GOAL := help
 
 .PHONY: help generate list health proxy serve test lint fmt check up stop down \
-        db-up db-down keys-sync keys-list
+        db-up db-down keys-sync keys-list obs-up obs-down loadtest loadtest-plots
 
 help:
 	@echo ""
@@ -89,6 +89,21 @@ keys-sync: ## Reconcile LiteLLM virtual keys with registry services (requires ru
 keys-list: ## Per-service key status + spend (requires running proxy)
 	$(PYTHON) -m tunnel.cli keys list
 
+obs-up: ## Start Prometheus (:9092; 9090-9091 taken on Lightning) + Grafana (:3000, admin/admin)
+	docker rm -f tunnel-prom tunnel-grafana >/dev/null 2>&1 || true
+	docker run -d --name tunnel-prom --restart unless-stopped --network host \
+		-v $(CURDIR)/configs/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro \
+		prom/prometheus --config.file=/etc/prometheus/prometheus.yml \
+		--web.listen-address=0.0.0.0:9092
+	docker run -d --name tunnel-grafana --restart unless-stopped --network host \
+		-e GF_SERVER_HTTP_PORT=3000 \
+		-v $(CURDIR)/configs/grafana/provisioning:/etc/grafana/provisioning:ro \
+		-v $(CURDIR)/configs/grafana/dashboards:/etc/grafana/dashboards:ro \
+		grafana/grafana
+
+obs-down: ## Stop Prometheus + Grafana containers
+	docker rm -f tunnel-prom tunnel-grafana
+
 serve: ## Launch one vLLM instance in the foreground. Usage: make serve ID=<instance-id>
 	@if [ -z "$(ID)" ]; then \
 		echo "Usage: make serve ID=<instance-id>"; \
@@ -111,6 +126,12 @@ test-tools: ## Tool-calling smoke test through the gateway (requires a running e
 
 bench-cache: ## KV-cache benchmark -> tests/services/kv_cache/RESULTS.md (requires a running engine)
 	$(PYTHON) tests/services/kv_cache/main.py
+
+loadtest: ## Open-loop load generator (RATE/DURATION/MIX/TIER_MIX env vars; running engine)
+	$(PYTHON) tests/services/loadgen/main.py
+
+loadtest-plots: ## Render analysis PNGs from loadgen results
+	$(PYTHON) tests/services/loadgen/plots.py
 
 lint: ## Lint with ruff
 	ruff check $(LINT_PATHS)
