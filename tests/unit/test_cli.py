@@ -8,7 +8,13 @@ import pytest
 import yaml
 
 from tunnel import cli
-from tunnel.cli import build_serve_command, cmd_stop, cmd_up, registry_path
+from tunnel.cli import (
+    _resolve_prisma_query_engine,
+    build_serve_command,
+    cmd_stop,
+    cmd_up,
+    registry_path,
+)
 from tunnel.registry import InstanceConfig, load_registry
 from tunnel.startup import StartupResult
 
@@ -30,6 +36,7 @@ def test_base_command_for_minimal_instance():
         "--max-model-len", "16384",
         "--dtype", "auto",
         "--default-chat-template-kwargs", '{"enable_thinking": false}',
+        "--no-use-tqdm-on-load",
         "--kv-transfer-config", '{"kv_connector": "LMCacheConnectorV1", "kv_role": "kv_both"}',
     ]
 
@@ -118,6 +125,39 @@ def test_extra_args_come_last():
 def test_registry_path_defaults_without_env(monkeypatch):
     monkeypatch.delenv("TUNNEL_REGISTRY", raising=False)
     assert registry_path() == "configs/models.yaml"
+
+
+def _make_engine(tmp_path, name):
+    """Create an executable stub prisma query-engine binary under tmp_path."""
+    cache = tmp_path / ".cache" / "prisma-python" / "binaries" / "5.17.0" / "h"
+    cache.mkdir(parents=True, exist_ok=True)
+    binary = cache / name
+    binary.write_text("#!/bin/sh\n")
+    binary.chmod(0o755)
+    return binary
+
+
+def test_prisma_resolver_pins_openssl3_engine(tmp_path, monkeypatch):
+    monkeypatch.setattr(cli.Path, "home", classmethod(lambda cls: tmp_path))
+    binary = _make_engine(tmp_path, "query-engine-debian-openssl-3.0.x")
+    env = {}
+    _resolve_prisma_query_engine(env)
+    assert env["PRISMA_QUERY_ENGINE_BINARY"] == str(binary)
+
+
+def test_prisma_resolver_respects_user_override(tmp_path, monkeypatch):
+    monkeypatch.setattr(cli.Path, "home", classmethod(lambda cls: tmp_path))
+    _make_engine(tmp_path, "query-engine-debian-openssl-3.0.x")
+    env = {"PRISMA_QUERY_ENGINE_BINARY": "/user/set/path"}
+    _resolve_prisma_query_engine(env)
+    assert env["PRISMA_QUERY_ENGINE_BINARY"] == "/user/set/path"
+
+
+def test_prisma_resolver_noop_when_no_engine(tmp_path, monkeypatch):
+    monkeypatch.setattr(cli.Path, "home", classmethod(lambda cls: tmp_path))
+    env = {}
+    _resolve_prisma_query_engine(env)
+    assert "PRISMA_QUERY_ENGINE_BINARY" not in env
 
 
 def test_registry_path_reads_env_when_set(monkeypatch):

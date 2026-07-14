@@ -158,6 +158,26 @@ def test_launch_instance_writes_pidfile_and_log(monkeypatch):
     assert "child output" in contents
 
 
+def test_launch_instance_truncates_previous_log(monkeypatch):
+    class _StubProc:
+        pid = 7
+
+    def _fake_popen(cmd, stdout, stderr, start_new_session):
+        stdout.write("second run\n")
+        return _StubProc()
+
+    log_path = LOG_DIR / "test-model.log"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    log_path.write_text("stale output from a previous run\n")
+
+    monkeypatch.setattr("subprocess.Popen", _fake_popen)
+    launch_instance(_minimal_instance())
+
+    contents = log_path.read_text()
+    assert "stale output from a previous run" not in contents
+    assert "second run" in contents
+
+
 def test_adopt_instance_writes_pidfile():
     adopt_instance("m1", 777)
     assert (PID_DIR / "m1.pid").read_text() == "777"

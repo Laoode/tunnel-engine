@@ -117,7 +117,8 @@ def build_serve_command(inst: InstanceConfig) -> list[str]:
         "--gpu-memory-utilization",  str(inst.gpu_memory_utilization),
         "--max-model-len",           str(inst.max_model_len),
         "--dtype",                   inst.dtype,
-        "--default-chat-template-kwargs", json.dumps({"enable_thinking": inst.enable_thinking})
+        "--default-chat-template-kwargs", json.dumps({"enable_thinking": inst.enable_thinking}),
+        "--no-use-tqdm-on-load",
     ]
 
     if inst.lora.enabled:
@@ -304,6 +305,35 @@ def cmd_list() -> None:
           f"({registry.litellm.routing_strategy})\n")
 
 
+def _resolve_prisma_query_engine(env: dict) -> None:
+    """Pin LiteLLM's prisma query-engine binary to an available OpenSSL-3.x build.
+
+    LiteLLM reaches Postgres through prisma, which picks its query-engine binary
+    by the host's OpenSSL version. When the host OpenSSL is newer than any build
+    prisma shipped for its pinned version (e.g. Lightning's OpenSSL 3.6 vs the
+    `openssl-3.0.x` engine bundled with prisma 5.17), prisma raises
+    BinaryNotFoundError at connect() and the proxy dies with "Not connected to
+    the query engine" even though Postgres is healthy and migrations ran. All
+    OpenSSL 3.x engine builds are compatible, so we point prisma at the newest
+    downloaded `debian-openssl-3.x` engine. A user-set PRISMA_QUERY_ENGINE_BINARY
+    always wins; a no-op when no cached engine is found (let prisma error itself).
+
+    Args:
+        env: Environment dict for the litellm subprocess, mutated in place.
+    """
+    if env.get("PRISMA_QUERY_ENGINE_BINARY"):
+        return
+    cache = Path.home() / ".cache" / "prisma-python" / "binaries"
+    engines = sorted(
+        (p for p in cache.glob("**/query-engine-debian-openssl-3*")
+         if os.access(p, os.X_OK)),
+        reverse=True,
+    )
+    if engines:
+        env["PRISMA_QUERY_ENGINE_BINARY"] = str(engines[0])
+        print(f".  prisma query engine -> {engines[0].name}", file=sys.stderr)
+
+
 def cmd_proxy() -> None:
     """Start the LiteLLM proxy. Requires `make generate` to have been run first."""
     config_path = Path(LITELLM_CONFIG)
@@ -316,6 +346,7 @@ def cmd_proxy() -> None:
         sys.exit(1)
 
     registry = load_registry(registry_path())
+    env = os.environ.copy()
     if registry.services and not os.environ.get("DATABASE_URL"):
         print(
             "WARN: services are defined in the registry but DATABASE_URL is "
@@ -323,12 +354,15 @@ def cmd_proxy() -> None:
             "Run `make db-up` and set DATABASE_URL in .env.",
             file=sys.stderr,
         )
+    if registry.services:
+        # DB layer is active only with services; align prisma's engine binary
+        # with the host OpenSSL before the proxy touches Postgres.
+        _resolve_prisma_query_engine(env)
     cmd = [
         "litellm",
         "--config", str(config_path),
         "--port",   str(registry.litellm.port),
     ]
-    env = os.environ.copy()
     # The litellm entrypoint does not put the cwd on sys.path, but the
     # generated config references tunnel.gateway.tier_hook by module path.
     repo_root = str(Path.cwd())

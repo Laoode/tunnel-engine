@@ -36,6 +36,10 @@ def _write_pidfile(inst_id: str, pid: int) -> None:
 def launch_instance(inst: InstanceConfig) -> int:
     """Spawn a vLLM instance in the background and record its pid.
 
+    Each launch truncates the instance's log so it starts fresh from the top:
+    old runs are not kept, keeping `logs/<id>.log` readable as the current run
+    only. Inspect a previous run before relaunching if you need its history.
+
     Args:
         inst: The instance to launch.
 
@@ -47,7 +51,7 @@ def launch_instance(inst: InstanceConfig) -> int:
 
     log_path = LOG_DIR / f"{inst.id}.log"
     timestamp = datetime.now(timezone.utc).isoformat()
-    with log_path.open("a") as logfile:
+    with log_path.open("w") as logfile:
         logfile.write(f"=== tunnel up {inst.id} @ {timestamp} ===\n")
         logfile.flush()
         proc = subprocess.Popen(
