@@ -108,6 +108,8 @@ vllm serve openbmb/MiniCPM5-1B \
 ## Quick Start
 
 The whole workflow is driven by `make`. Run `make help` any time to list every target.
+New to the codebase? Read `docs/PLAYBOOK.md` - the fast-onboarding guide covering the
+repo layout, the multi-tenancy features, common workflows, and known gotchas.
 
 ### 1. One-time setup
 
@@ -116,7 +118,9 @@ make install                 # install all dependencies
 
 cp .env.example .env         # then edit .env and set at least:
                              #   HF_TOKEN=hf_...           (for gated models)
-                             #   LITELLM_MASTER_KEY=...    (the gateway auth key)
+                             #   LITELLM_MASTER_KEY=...    (the gateway ADMIN key)
+                             #   PG_PASSWORD + DATABASE_URL (virtual keys / spend
+                             #   tracking; see .env.example comments)
 ```
 
 Secrets live only in `.env`. They are never written into any file under `configs/`
@@ -128,7 +132,7 @@ Secrets live only in `.env`. They are never written into any file under `configs
 
 ```bash
 make check       # validate the registry: YAML parses + GPU budget not exceeded (writes nothing)
-make generate    # rebuild derived configs (configs/litellm/ + configs/lmcache/)
+make generate    # rebuild derived configs (configs/litellm/ + configs/lmcache/ + configs/prometheus/)
 make list        # show registered instances, their ports, and the proxy port
 ```
 
@@ -216,7 +220,7 @@ the surviving models too).
 | --- | --- |
 | `make install` | Install all dependencies |
 | `make check` | Validate the registry without writing anything |
-| `make generate` | Rebuild derived LiteLLM + LMCache configs |
+| `make generate` | Rebuild derived LiteLLM + LMCache + Prometheus configs |
 | `make list` | List registered instances and ports |
 | `make serve ID=<id>` | Launch one instance in the foreground |
 | `make up` | Launch the whole fleet in the background + proxy |
@@ -224,8 +228,35 @@ the surviving models too).
 | `make health` | Poll instance health + GPU memory |
 | `make stop ID=<id>` | Stop ONE instance, leave the others and the proxy running |
 | `make down` | Stop every instance and the proxy, free the GPU |
+| `make db-up` / `make db-down` | Start/stop Postgres for virtual keys + spend logs |
+| `make keys-sync` | Reconcile LiteLLM virtual keys with registry services |
+| `make keys-list` | Per-service key status + spend |
+| `make obs-up` / `make obs-down` | Start/stop Prometheus (:9092) + Grafana (:3000) |
+| `make loadtest` | Open-loop load generator (RATE/DURATION/MIX/TIER_MIX env vars) |
+| `make loadtest-plots` | Render analysis PNGs from loadgen results |
 | `make test` | Run the full test suite |
 | `make view-models` | List locally cached HuggingFace models |
+
+## Virtual keys, tiers, and rate limiting
+
+Every consumer declared under `services:` in `configs/models.yaml` gets its own
+LiteLLM **virtual key** with a model allowlist, tier rate limits (rpm/tpm), an
+optional budget, and a scheduling priority (enterprise requests preempt lower tiers
+at the vLLM engine under load). Spend is tracked per service at the `cost:` rates in
+the registry, so per-service costs are directly comparable.
+
+```bash
+make db-up       # start Postgres (Docker, :5433) - stores keys + spend logs
+make keys-sync   # create/reconcile one virtual key per registry service
+make keys-list   # per-service key status, tier, allowed models, and spend
+```
+
+Key secrets are written to `.tunnel/keys.env` (gitignored, chmod 600) as
+`SVC_<ID>=sk-...`. That file is the **only** copy: hand each service its own key from
+there. The `LITELLM_MASTER_KEY` is for administration (key sync, debugging) only -
+never ship it to a service, since it bypasses every limit and allowlist. Exceeding a
+tier's rpm/tpm returns HTTP 429; calling a model outside the key's allowlist returns
+403. See `docs/PLAYBOOK.md` for the full workflow.
 
 ## Calling Tunnel Engine from your service
 
@@ -237,7 +268,7 @@ changes - that is the whole point of the gateway.
 | What your client needs | Value |
 | --- | --- |
 | LLM endpoint (`base_url`) | `http://<tunnel-host>:4000/v1` (e.g. `http://localhost:4000/v1`) |
-| LLM API key | your `LITELLM_MASTER_KEY` (the value in `.env`) |
+| LLM API key | your service's virtual key from `.tunnel/keys.env` (`SVC_<ID>=sk-...`) |
 | Model provider | `openai` - the gateway speaks the OpenAI API |
 | LLM model | a registered instance id, e.g. `lfm2.5-8b-a1b` - **swap this to switch models** |
 
@@ -247,7 +278,7 @@ Discover the available model ids with `make list`, or `GET /v1/models` on the ga
 
 ```bash
 curl http://localhost:4000/v1/chat/completions \
-  -H "Authorization: Bearer $LITELLM_MASTER_KEY" \
+  -H "Authorization: Bearer $SVC_MY_SERVICE" \
   -H "Content-Type: application/json" \
   -d '{
     "model": "lfm2.5-8b-a1b",
@@ -262,7 +293,7 @@ from openai import OpenAI
 
 client = OpenAI(
     base_url="http://localhost:4000/v1",   # the ONE endpoint
-    api_key="sk-...",                       # your LITELLM_MASTER_KEY
+    api_key="sk-...",                       # your service's virtual key
 )
 
 resp = client.chat.completions.create(
@@ -284,7 +315,7 @@ If your service takes provider settings, map them like this:
 ```
 provider   = openai
 base_url    = http://<tunnel-host>:4000/v1
-api_key     = <LITELLM_MASTER_KEY>
+api_key     = <your service's SVC_* key from .tunnel/keys.env>
 model       = <instance-id>   # e.g. lfm2.5-8b-a1b, swap per call
 ```
 
