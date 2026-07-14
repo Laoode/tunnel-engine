@@ -17,3 +17,8 @@ scrape_configs:
     labels:
       instance_id: minicpm-1b
       model: openbmb/MiniCPM5-1B
+  - targets:
+    - localhost:8002
+    labels:
+      instance_id: xguard-0.6b
+      model: Alibaba-AAIG/YuFeng-XGuard-Reason-0.6B

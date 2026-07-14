@@ -9,7 +9,8 @@ export TUNNEL_REGISTRY := $(REGISTRY)
 .DEFAULT_GOAL := help
 
 .PHONY: help generate list health proxy serve test lint fmt check up stop down \
-        db-up db-down keys-sync keys-list obs-up obs-down loadtest loadtest-plots
+        db-up db-down keys-sync keys-list obs-up obs-down loadtest loadtest-plots \
+        guard-dataset guard-judge guard-bench
 
 help:
 	@echo ""
@@ -132,6 +133,15 @@ loadtest: ## Open-loop load generator (RATE/DURATION/MIX/TIER_MIX env vars; runn
 
 loadtest-plots: ## Render analysis PNGs from loadgen results
 	$(PYTHON) tests/services/loadgen/plots.py
+
+guard-dataset: ## Generate Indonesian guardrail eval dataset via DeepSeek v4 Pro (needs DEEPSEEK_API_KEY)
+	$(PYTHON) tests/services/guardbench/dataset.py
+
+guard-judge: ## Audit the guardrail dataset with Sonnet 5 as LLM-judge (needs claude CLI)
+	$(PYTHON) tests/services/guardbench/judge.py
+
+guard-bench: ## Benchmark XGuard latency + accuracy on the judged dataset (needs a running fleet)
+	$(PYTHON) tests/services/guardbench/main.py
 
 lint: ## Lint with ruff
 	ruff check $(LINT_PATHS)

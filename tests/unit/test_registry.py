@@ -351,3 +351,81 @@ def test_invalid_scheduling_policy_rejected():
 def test_scheduling_policy_defaults_to_none():
     reg = load_registry(_write(_minimal_registry()))
     assert reg.instances[0].scheduling_policy is None
+
+
+# Guardrails
+def _guarded_registry(**guardrail_overrides) -> dict:
+    return {
+        "instances": [
+            _minimal_instance(),
+            _minimal_instance(id="guard", model="org/guard", port=8002,
+                              gpu_memory_utilization=0.10, internal=True),
+        ],
+        "guardrails": {"model": "guard", **guardrail_overrides},
+    }
+
+
+def test_guardrails_block_loads_with_defaults():
+    reg = load_registry(_write(_guarded_registry()))
+    assert reg.guardrails.enabled is True
+    assert reg.guardrails.threshold == 0.5
+    assert reg.guardrails.check_output is False
+    assert reg.guardrails.on_error == "allow"
+
+
+def test_guardrails_defaults_to_none():
+    reg = load_registry(_write(_minimal_registry()))
+    assert reg.guardrails is None
+
+
+def test_guardrails_unknown_model_rejected():
+    with pytest.raises(Exception, match="not a"):
+        load_registry(_write({
+            "instances": [_minimal_instance()],
+            "guardrails": {"model": "ghost"},
+        }))
+
+
+def test_guardrails_model_must_be_internal():
+    data = _guarded_registry()
+    data["instances"][1]["internal"] = False
+    with pytest.raises(Exception, match="internal"):
+        load_registry(_write(data))
+
+
+def test_guardrails_invalid_threshold_rejected():
+    with pytest.raises(Exception, match="threshold"):
+        load_registry(_write(_guarded_registry(threshold=1.5)))
+
+
+def test_guardrails_invalid_on_error_rejected():
+    with pytest.raises(Exception, match="on_error"):
+        load_registry(_write(_guarded_registry(on_error="explode")))
+
+
+def test_service_referencing_internal_instance_rejected():
+    data = _guarded_registry()
+    data["tiers"] = {"free": {"priority": 2, "rpm_limit": 60, "tpm_limit": 20000}}
+    data["services"] = [{"id": "dev", "tier": "free", "models": ["guard"]}]
+    with pytest.raises(Exception, match="unknown IDs"):
+        load_registry(_write(data))
+
+
+def test_fallback_to_internal_instance_rejected():
+    data = _guarded_registry()
+    data["instances"][0]["fallbacks"] = ["guard"]
+    with pytest.raises(Exception, match="unknown IDs"):
+        load_registry(_write(data))
+
+
+def test_service_guardrails_optout_loads():
+    data = _guarded_registry()
+    data["tiers"] = {"free": {"priority": 2, "rpm_limit": 60, "tpm_limit": 20000}}
+    data["services"] = [{"id": "dev", "tier": "free", "guardrails": False}]
+    reg = load_registry(_write(data))
+    assert reg.services[0].guardrails is False
+
+
+def test_internal_defaults_to_false():
+    reg = load_registry(_write(_minimal_registry()))
+    assert reg.instances[0].internal is False

@@ -270,6 +270,8 @@ def cmd_generate() -> None:
             flags.append(f"quant:{inst.quantization}")
         if inst.tool_parser:
             flags.append(f"tools:{inst.tool_parser}")
+        if inst.internal:
+            flags.append("internal")
         flag_str = f"  [{', '.join(flags)}]" if flags else ""
         print(f"  . {inst.id:<24}  :{inst.port}  {inst.model}{flag_str}")
 

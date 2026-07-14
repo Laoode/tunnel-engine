@@ -20,7 +20,7 @@
   <img src="https://img.shields.io/badge/vLLM-Model%20Serving-30a2ff" />
   <img src="https://img.shields.io/badge/LMCache-Global%20Cache-599aac" />
   <img src="https://img.shields.io/badge/LiteLLM-Orchestration-white" />
-  <img src="https://img.shields.io/badge/NeMo_Guardrails-AI_Safety-76B900?logo=nvidia" />
+  <img src="https://img.shields.io/badge/XGuard_0.6B-AI_Safety-6A5ACD?logo=alibabacloud&logoColor=white" />
   <img src="https://img.shields.io/badge/APISIX-Edge_Gateway-e8433f?logo=apacheapisix&logoColor=white" />
   <img src="https://img.shields.io/badge/Kubernetes-Service_Mesh-326CE5?logo=kubernetes&logoColor=white" />
   <img src="https://img.shields.io/badge/KEDA-Autoscaling-FF4500?logo=keda&logoColor=white" />
@@ -64,7 +64,8 @@ Architecture (what we need):
                         └─────────────┬─────────────┘                                                │
                         ▲             │(Calls Hook)                                                  │
       (Checks/Sanitizes)│   ┌─────────▼─────────┐                                                    │
-                        └───│  NeMo Guardrails  │  ← Async or synchronous validation block           │
+                        └───│  XGuard :8002     │  ← In-proxy content safety (internal, ~49ms)       │
+                            │  guard_hook       │    pre-call always; post-call if check_output      │
                             └─────────┬─────────┘                                                    │
                                       │ (Validated request)                                          │
                         ┌─────────────▼─────────────┐                                                │

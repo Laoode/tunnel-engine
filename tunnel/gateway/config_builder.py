@@ -46,6 +46,8 @@ def build_litellm_config(registry: TunnelRegistry) -> dict:
     Returns:
         Dict matching the LiteLLM proxy config schema.
     """
+    # Internal instances (e.g. the guardrail classifier) are omitted: clients
+    # must not be able to route to them through the proxy.
     model_list = [
         {
             "model_name": inst.id,
@@ -57,6 +59,7 @@ def build_litellm_config(registry: TunnelRegistry) -> dict:
             },
         }
         for inst in registry.instances
+        if not inst.internal
     ]
 
     # Remote OpenAI-compatible upstreams (e.g. DeepSeek). The key is stored as an
@@ -107,6 +110,10 @@ def build_litellm_config(registry: TunnelRegistry) -> dict:
         # directory, so this names a generated shim written next to the config
         # (see write_litellm_config), which imports tunnel.gateway.tier_hook.
         callbacks.append("tier_hook.tier_priority_handler")
+    if registry.guardrails and registry.guardrails.enabled:
+        # Content-safety hook calling the internal guard instance (same
+        # config-relative shim mechanism as tier_hook).
+        callbacks.append("guard_hook.guard_handler")
     if callbacks:
         litellm_settings["callbacks"] = callbacks
 
@@ -146,15 +153,26 @@ def write_litellm_config(
     out.write_text(
         _AUTO_HEADER + yaml.dump(config, default_flow_style=False, sort_keys=False)
     )
-    shim = out.parent / "tier_hook.py"
-    if registry.tiers:
-        # LiteLLM loads custom callbacks from files relative to the config dir;
-        # the shim bridges to the real module (importable via PYTHONPATH, which
-        # cmd_proxy sets to the repo root).
-        shim.write_text(
-            "# AUTO-GENERATED shim (see tunnel/gateway/config_builder.py).\n"
-            "from tunnel.gateway.tier_hook import tier_priority_handler  # noqa: F401\n"
-        )
-    else:
-        shim.unlink(missing_ok=True)
+    # LiteLLM loads custom callbacks from files relative to the config dir;
+    # each shim bridges to the real module (importable via PYTHONPATH, which
+    # cmd_proxy sets to the repo root).
+    shims = {
+        "tier_hook.py": (
+            bool(registry.tiers),
+            "from tunnel.gateway.tier_hook import tier_priority_handler  # noqa: F401\n",
+        ),
+        "guard_hook.py": (
+            bool(registry.guardrails and registry.guardrails.enabled),
+            "from tunnel.gateway.guard_hook import guard_handler  # noqa: F401\n",
+        ),
+    }
+    for filename, (wanted, import_line) in shims.items():
+        shim = out.parent / filename
+        if wanted:
+            shim.write_text(
+                "# AUTO-GENERATED shim (see tunnel/gateway/config_builder.py).\n"
+                + import_line
+            )
+        else:
+            shim.unlink(missing_ok=True)
     return out

@@ -179,3 +179,42 @@ def test_tier_hook_callback_emitted_when_tiers_defined():
 def test_no_callbacks_key_without_tiers_or_prometheus():
     cfg = build_litellm_config(_reg(1))
     assert "callbacks" not in cfg["litellm_settings"]
+
+
+def _reg_with_guardrails(enabled=True) -> TunnelRegistry:
+    return TunnelRegistry.model_validate({
+        "instances": [
+            {"id": "chat", "model": "org/chat", "port": 8000,
+             "gpu_memory_utilization": 0.40},
+            {"id": "guard", "model": "org/guard", "port": 8002,
+             "gpu_memory_utilization": 0.10, "internal": True},
+        ],
+        "litellm": {"port": 4000, "master_key": "sk-test"},
+        "guardrails": {"enabled": enabled, "model": "guard"},
+    })
+
+
+def test_internal_instance_excluded_from_model_list():
+    names = {m["model_name"]
+             for m in build_litellm_config(_reg_with_guardrails())["model_list"]}
+    assert names == {"chat"}
+
+
+def test_guard_hook_callback_emitted_when_enabled():
+    cfg = build_litellm_config(_reg_with_guardrails())
+    assert "guard_hook.guard_handler" in cfg["litellm_settings"]["callbacks"]
+
+
+def test_guard_hook_callback_absent_when_disabled():
+    cfg = build_litellm_config(_reg_with_guardrails(enabled=False))
+    assert "guard_hook" not in str(cfg["litellm_settings"].get("callbacks", []))
+
+
+def test_guard_shim_written_and_removed():
+    with tempfile.TemporaryDirectory() as d:
+        out = Path(d) / "config.yaml"
+        write_litellm_config(_reg_with_guardrails(), out)
+        shim = Path(d) / "guard_hook.py"
+        assert "tunnel.gateway.guard_hook" in shim.read_text()
+        write_litellm_config(_reg_with_guardrails(enabled=False), out)
+        assert not shim.exists()

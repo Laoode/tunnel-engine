@@ -58,6 +58,18 @@ instances:
       output_per_mtok: 0.20
     description: "MiniCPM 1B – Tool-calling bench model"
 
+  - id: xguard-0.6b
+    model: Alibaba-AAIG/YuFeng-XGuard-Reason-0.6B
+    port: 8002
+    gpu_memory_utilization: 0.10
+    max_model_len: 4096
+    internal: true          # guardrail classifier: never client-routable
+    scheduling_policy: fcfs # single-priority traffic; also avoids vllm#29747 class
+    lmcache:
+      enabled: false        # 1-token classification turns; KV offload is pure overhead
+    extra_args: ["--enforce-eager", "--max-num-seqs", "16"]  # skip CUDA graphs to fit 0.10
+    description: "YuFeng XGuard 0.6B – gateway content-safety classifier (internal)"
+
   # Add more instances below. Examples:
   #
   # Standard model:
@@ -132,6 +144,18 @@ litellm:
   prometheus: false  # LiteLLM's prometheus callback is enterprise-gated (litellm#7817);
                      # request metrics come from each vLLM instance's native /metrics.
 
+# Gateway content safety (XGuard classifier, runs in-proxy via guard_hook).
+# Input (pre-call) checks are always on while enabled; response checks are
+# opt-in via check_output (non-streaming responses only). Services opt out
+# individually with `guardrails: false`. Keyless callers are always guarded.
+guardrails:
+  enabled: true
+  model: xguard-0.6b   # internal instance id serving the classifier
+  threshold: 0.5       # block when any non-safe risk score >= threshold
+  check_output: false  # set true to also classify responses (post-call)
+  on_error: allow      # fail-open: a guard outage must not take the gateway down
+  timeout_s: 2.0
+
 # Service tiers: rate limits, budgets, and scheduling priority (lower = served
 # earlier once vLLM priority scheduling lands). Enforced per virtual key.
 tiers:
@@ -162,6 +186,7 @@ services:
     description: "Klaudia assistant service"
   - id: tools-bench
     tier: pro
+    guardrails: false   # bench harness sends synthetic traffic; skip the guard hop
     description: "Tools Bench harness"
   - id: development
     tier: free

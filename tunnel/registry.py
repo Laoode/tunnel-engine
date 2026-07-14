@@ -87,6 +87,10 @@ class InstanceConfig(BaseModel):
     port: int
     gpu_memory_utilization: float
     description: str = ""
+    # Internal instances (e.g. the guardrail classifier) are launched and
+    # health-gated like any other, but excluded from the LiteLLM model_list:
+    # clients cannot route to them, and services/fallbacks may not reference them.
+    internal: bool = False
     tensor_parallel_size: int = 1
     dtype: str = "auto"
     attention_backend: Optional[str] = None
@@ -200,6 +204,44 @@ class RemoteModelConfig(BaseModel):
     cost: Optional[ModelCost] = None
 
 
+class GuardrailsConfig(BaseModel):
+    """Gateway-level content safety via an XGuard-style classifier instance.
+
+    The referenced instance must be marked internal: it is called directly by
+    the guard hook (bypassing LiteLLM routing) and must not be client-routable.
+    Input (pre-call) checking is always on when enabled; response checking is
+    opt-in via check_output and applies to non-streaming responses only.
+    """
+    enabled: bool = True
+    model: str                   # registry instance id serving the guard model
+    threshold: float = 0.5       # block when any non-safe risk score >= threshold
+    check_output: bool = False   # also classify responses (post-call, non-streaming)
+    on_error: str = "allow"      # guard call failure: "allow" (fail-open) | "block"
+    timeout_s: float = 2.0       # guard call timeout; on_error applies past this
+
+    @field_validator("threshold")
+    @classmethod
+    def validate_threshold(cls, v: float) -> float:
+        if not (0.0 < v <= 1.0):
+            raise ValueError(f"guardrails.threshold must be in (0.0, 1.0], got {v}")
+        return v
+
+    @field_validator("on_error")
+    @classmethod
+    def validate_on_error(cls, v: str) -> str:
+        allowed = {"allow", "block"}
+        if v not in allowed:
+            raise ValueError(f"guardrails.on_error must be one of {allowed}, got '{v}'")
+        return v
+
+    @field_validator("timeout_s")
+    @classmethod
+    def validate_timeout(cls, v: float) -> float:
+        if v <= 0:
+            raise ValueError(f"guardrails.timeout_s must be > 0, got {v}")
+        return v
+
+
 class TierConfig(BaseModel):
     """Rate/budget limits and scheduling priority for one service tier."""
     priority: int           # vLLM scheduling priority: lower = served earlier
@@ -232,6 +274,8 @@ class ServiceConfig(BaseModel):
     tier: str
     models: list[str] = Field(default_factory=list)
     description: str = ""
+    # None = follow the global guardrails toggle; False = opt this service out.
+    guardrails: Optional[bool] = None
 
 
 class TunnelRegistry(BaseModel):
@@ -241,6 +285,14 @@ class TunnelRegistry(BaseModel):
     gpu: GPUConfig = Field(default_factory=GPUConfig)
     tiers: dict[str, TierConfig] = Field(default_factory=dict)
     services: list[ServiceConfig] = Field(default_factory=list)
+    guardrails: Optional[GuardrailsConfig] = None
+
+    @property
+    def routable_ids(self) -> set[str]:
+        """Model ids clients may call through the gateway (internal excluded)."""
+        return {inst.id for inst in self.instances if not inst.internal} | {
+            rm.id for rm in self.remote_models
+        }
 
     @model_validator(mode="after")
     def validate_no_port_collisions(self) -> "TunnelRegistry":
@@ -277,10 +329,10 @@ class TunnelRegistry(BaseModel):
 
         Fallback targets may be local instances or remote models, so a local
         model can escalate to a hosted API (e.g. overflow -> DeepSeek).
+        Internal instances are not valid targets: they are absent from the
+        LiteLLM model_list, so the router could never reach them.
         """
-        valid_ids = {inst.id for inst in self.instances} | {
-            rm.id for rm in self.remote_models
-        }
+        valid_ids = self.routable_ids
         for inst in self.instances:
             unknown = [fb for fb in inst.fallbacks if fb not in valid_ids]
             if unknown:
@@ -322,9 +374,7 @@ class TunnelRegistry(BaseModel):
             raise ValueError(
                 f"Service ids collide after '-'/'_' normalization: {env_dupes}"
             )
-        valid_ids = {inst.id for inst in self.instances} | {
-            rm.id for rm in self.remote_models
-        }
+        valid_ids = self.routable_ids
         for svc in self.services:
             if svc.tier not in self.tiers:
                 raise ValueError(
@@ -336,6 +386,29 @@ class TunnelRegistry(BaseModel):
                 raise ValueError(
                     f"Service '{svc.id}' models reference unknown IDs: {unknown}"
                 )
+        return self
+
+    @model_validator(mode="after")
+    def validate_guardrails(self) -> "TunnelRegistry":
+        """The guard model must be a registered instance marked internal.
+
+        Internal is required so the classifier is never client-routable: the
+        guard hook calls its vLLM port directly, outside LiteLLM routing,
+        keys, and spend tracking.
+        """
+        if self.guardrails is None:
+            return self
+        inst = self.get_instance(self.guardrails.model)
+        if inst is None:
+            raise ValueError(
+                f"guardrails.model '{self.guardrails.model}' is not a "
+                f"registered instance. Instances: {[i.id for i in self.instances]}"
+            )
+        if not inst.internal:
+            raise ValueError(
+                f"guardrails.model '{inst.id}' must set internal: true so it "
+                "is excluded from client routing and key allowlists."
+            )
         return self
 
     def get_instance(self, instance_id: str) -> Optional[InstanceConfig]:

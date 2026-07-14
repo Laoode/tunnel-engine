@@ -47,3 +47,4 @@ litellm_settings:
   require_auth_for_metrics_endpoint: false
   callbacks:
   - tier_hook.tier_priority_handler
+  - guard_hook.guard_handler
