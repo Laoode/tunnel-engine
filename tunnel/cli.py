@@ -10,6 +10,8 @@ Usage (each command also has a Makefile target of the same name):
   python -m tunnel.cli up                      Launch all instances, health-gate, start proxy
   python -m tunnel.cli stop    <instance-id>   Stop ONE instance, leave the rest + proxy running
   python -m tunnel.cli down                    Stop every instance and the proxy
+  python -m tunnel.cli keys    sync [--prune]  Reconcile LiteLLM virtual keys with the registry
+  python -m tunnel.cli keys    list            Per-service key status + spend
 """
 from __future__ import annotations
 
@@ -20,8 +22,11 @@ import sys
 import json
 from pathlib import Path
 
+import httpx
+
 from tunnel.cache.lmcache_config import write_lmcache_configs
 from tunnel.gateway.config_builder import write_litellm_config
+from tunnel.gateway.keys import KEYS_ENV_PATH, fetch_key_overview, sync_keys
 from tunnel.health.checker import check_all, collect_gpu_stats, format_report
 from tunnel.logging import configure_logging
 from tunnel.orchestrator import (
@@ -302,6 +307,13 @@ def cmd_proxy() -> None:
         sys.exit(1)
 
     registry = load_registry(registry_path())
+    if registry.services and not os.environ.get("DATABASE_URL"):
+        print(
+            "WARN: services are defined in the registry but DATABASE_URL is "
+            "unset; the proxy's virtual-key DB layer will fail to start. "
+            "Run `make db-up` and set DATABASE_URL in .env.",
+            file=sys.stderr,
+        )
     cmd = [
         "litellm",
         "--config", str(config_path),
@@ -499,6 +511,59 @@ def cmd_stop(instance_id: str) -> None:
         print(f".  {inst.id}  not running", file=sys.stderr)
 
 
+def cmd_keys(args: list[str]) -> None:
+    """Manage LiteLLM virtual keys for registry services (sync / list).
+
+    Requires the proxy to be running: the keys API is served on litellm.port
+    and is authenticated with the master key.
+
+    Args:
+        args: ["sync", "--prune"] or ["list"].
+    """
+    parser = argparse.ArgumentParser(prog="tunnel keys")
+    parser.add_argument("action", choices=["sync", "list"])
+    parser.add_argument(
+        "--prune", action="store_true",
+        help="delete keys whose service is no longer in the registry",
+    )
+    parsed = parser.parse_args(args)
+
+    registry = load_registry(registry_path())
+    if not registry.services:
+        print("No services defined in the registry; nothing to do.", file=sys.stderr)
+        return
+    master_key = registry.litellm.resolved_master_key
+    if not master_key:
+        _die("master key unavailable: set LITELLM_MASTER_KEY (see .env.example)")
+    base_url = f"http://localhost:{registry.litellm.port}"
+
+    try:
+        if parsed.action == "sync":
+            report = sync_keys(registry, base_url, master_key, prune=parsed.prune)
+            for action in ("created", "updated", "regenerated", "unchanged", "pruned"):
+                ids = getattr(report, action)
+                if ids:
+                    print(f"  {action:<12} {', '.join(ids)}", file=sys.stderr)
+            print(f"  secrets -> {KEYS_ENV_PATH}", file=sys.stderr)
+        else:
+            rows = fetch_key_overview(registry, base_url, master_key)
+            print(f"\n{'SERVICE':<20}  {'TIER':<12}  {'SPEND $':<12}  MODELS")
+            print("-" * 72)
+            for row in rows:
+                spend = f"{row['spend']:.6f}" if row["spend"] is not None else "-"
+                synced = "" if row["synced"] else "  (not synced)"
+                print(
+                    f"{row['service']:<20}  {row['tier']:<12}  {spend:<10}  "
+                    f"{', '.join(row['models'])}{synced}"
+                )
+            print()
+    except httpx.HTTPError as exc:
+        _die(
+            f"keys {parsed.action} failed: {exc}\n"
+            f"  Is the proxy running on :{registry.litellm.port} (make up)?"
+        )
+
+
 _COMMANDS = {
     "serve":    lambda args: cmd_serve(args[0] if args else _die("serve requires <instance-id>")),
     "health":   lambda _: cmd_health(),
@@ -509,6 +574,7 @@ _COMMANDS = {
     "up":       lambda args: cmd_up(args),
     "stop":     lambda args: cmd_stop(args[0] if args else _die("stop requires <instance-id>")),
     "down":     lambda args: cmd_down(args),
+    "keys":     lambda args: cmd_keys(args),
 }
 
 

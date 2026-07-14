@@ -245,3 +245,92 @@ def test_invalid_remote_serde_rejected():
             {**_minimal_instance(),
              "lmcache": {"enabled": True, "backend": "redis", "remote_serde": "zstd"}}
         )))
+
+
+# Tiers + services
+def _tiered_registry(**overrides) -> dict:
+    data = {
+        "instances": [_minimal_instance()],
+        "tiers": {"free": {"priority": 2, "rpm_limit": 60, "tpm_limit": 20000}},
+        "services": [{"id": "dev", "tier": "free", "models": ["test-model"]}],
+    }
+    data.update(overrides)
+    return data
+
+
+def test_tiers_and_services_load():
+    reg = load_registry(_write(_tiered_registry()))
+    assert reg.tiers["free"].priority == 2
+    assert reg.services[0].models == ["test-model"]
+
+
+def test_tiers_default_empty():
+    reg = load_registry(_write(_minimal_registry()))
+    assert reg.tiers == {} and reg.services == []
+
+
+def test_service_with_unknown_tier_rejected():
+    with pytest.raises(Exception, match="unknown tier"):
+        load_registry(_write(_tiered_registry(
+            services=[{"id": "dev", "tier": "platinum"}])))
+
+
+def test_service_with_unknown_model_rejected():
+    with pytest.raises(Exception, match="unknown ID"):
+        load_registry(_write(_tiered_registry(
+            services=[{"id": "dev", "tier": "free", "models": ["nope"]}])))
+
+
+def test_service_may_reference_remote_model():
+    data = _tiered_registry(
+        remote_models=[{"id": "remote-x", "upstream_model": "x",
+                        "api_base": "https://api.example.com",
+                        "api_key_env": "X_KEY"}],
+        services=[{"id": "dev", "tier": "free", "models": ["remote-x"]}],
+    )
+    reg = load_registry(_write(data))
+    assert reg.services[0].models == ["remote-x"]
+
+
+def test_duplicate_service_ids_rejected():
+    with pytest.raises(Exception, match="[Dd]uplicate service"):
+        load_registry(_write(_tiered_registry(
+            services=[{"id": "dev", "tier": "free"},
+                      {"id": "dev", "tier": "free"}])))
+
+
+def test_negative_tier_priority_rejected():
+    with pytest.raises(Exception, match="priority"):
+        load_registry(_write(_tiered_registry(
+            tiers={"free": {"priority": -1, "rpm_limit": 60, "tpm_limit": 20000}})))
+
+
+def test_zero_tier_limits_rejected():
+    with pytest.raises(Exception, match="limits"):
+        load_registry(_write(_tiered_registry(
+            tiers={"free": {"priority": 2, "rpm_limit": 0, "tpm_limit": 20000}})))
+
+
+# Cost
+def test_instance_cost_loads():
+    reg = load_registry(_write(_minimal_registry(
+        _minimal_instance(cost={"input_per_mtok": 0.05, "output_per_mtok": 0.20}))))
+    assert reg.instances[0].cost.output_per_mtok == 0.20
+
+
+def test_negative_cost_rejected():
+    with pytest.raises(Exception, match="cost"):
+        load_registry(_write(_minimal_registry(
+            _minimal_instance(cost={"input_per_mtok": -1, "output_per_mtok": 0.2}))))
+
+
+def test_cost_defaults_to_none():
+    reg = load_registry(_write(_minimal_registry()))
+    assert reg.instances[0].cost is None
+
+
+def test_service_ids_colliding_after_env_normalization_rejected():
+    with pytest.raises(Exception, match="normalization"):
+        load_registry(_write(_tiered_registry(
+            services=[{"id": "a-b", "tier": "free"},
+                      {"id": "a_b", "tier": "free"}])))

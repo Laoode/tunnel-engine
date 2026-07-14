@@ -19,6 +19,9 @@ defaults:
     backend: cpu
     max_cache_size_gb: 20
     chunk_size: 256
+  cost:             # synthetic amortized GPU rate (USD per 1M tokens) for spend tracking
+    input_per_mtok: 0.05
+    output_per_mtok: 0.20
   extra_args: []
 
 # GPU memory budget – `make check` fails if instance gpu_memory_utilization sums past this.
@@ -97,16 +100,54 @@ remote_models:
     upstream_model: deepseek-v4-pro
     api_base: https://api.deepseek.com
     api_key_env: DEEPSEEK_API_KEY
+    cost:             # PLACEHOLDER: update to DeepSeek's current list price
+      input_per_mtok: 0.55
+      output_per_mtok: 2.19
     description: "DeepSeek V4 Pro – hosted, thinking-capable"
 
   - id: deepseek-v4-flash
     upstream_model: deepseek-v4-flash
     api_base: https://api.deepseek.com
     api_key_env: DEEPSEEK_API_KEY
+    cost:             # PLACEHOLDER: update to DeepSeek's current list price
+      input_per_mtok: 0.14
+      output_per_mtok: 0.28
     description: "DeepSeek V4 Flash – hosted, fast/cheap"
 
 litellm:
   port: 4000
   master_key: "os.environ/LITELLM_MASTER_KEY"
   routing_strategy: least-busy
-  prometheus: true
+  prometheus: false  # enterprise-gated callback; use vLLM native /metrics instead
+
+# Same tier policy as dev; see configs/models.yaml for field docs.
+tiers:
+  enterprise:
+    priority: 0
+    rpm_limit: 1200
+    tpm_limit: 500000
+  pro:
+    priority: 1
+    rpm_limit: 300
+    tpm_limit: 100000
+    max_budget: 25.0
+    budget_duration: 30d
+  free:
+    priority: 2
+    rpm_limit: 60
+    tpm_limit: 20000
+    max_budget: 5.0
+    budget_duration: 30d
+
+services:
+  - id: klaudia
+    tier: enterprise
+    models: [qwen3.5-4b, deepseek-v4-flash]
+    description: "Klaudia assistant service"
+  - id: tools-bench
+    tier: pro
+    description: "Tools Bench harness"
+  - id: development
+    tier: free
+    models: [qwen3.5-0.8b]
+    description: "Ad-hoc developer access"

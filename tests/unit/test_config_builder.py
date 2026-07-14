@@ -133,3 +133,37 @@ def test_remote_model_api_key_is_env_reference_not_secret():
         if m["model_name"] == "deepseek-v4-pro"
     )
     assert entry["litellm_params"]["api_key"] == "os.environ/DEEPSEEK_API_KEY"
+
+
+def _reg_with_services():
+    return TunnelRegistry.model_validate({
+        "instances": [
+            {"id": "model-0", "model": "org/model-0", "port": 8000,
+             "gpu_memory_utilization": 0.10,
+             "cost": {"input_per_mtok": 0.05, "output_per_mtok": 0.20}},
+        ],
+        "litellm": {"port": 4000, "master_key": "sk-test"},
+        "tiers": {"free": {"priority": 2, "rpm_limit": 60, "tpm_limit": 20000}},
+        "services": [{"id": "dev", "tier": "free"}],
+    })
+
+
+def test_database_url_emitted_only_with_services():
+    with_db = build_litellm_config(_reg_with_services())["general_settings"]
+    assert with_db["database_url"] == "os.environ/DATABASE_URL"
+    assert with_db["store_model_in_db"] is False
+
+    without_db = build_litellm_config(_reg(1))["general_settings"]
+    assert "database_url" not in without_db
+    assert "store_model_in_db" not in without_db
+
+
+def test_cost_emitted_as_per_token():
+    params = build_litellm_config(_reg_with_services())["model_list"][0]["litellm_params"]
+    assert params["input_cost_per_token"] == 0.05 / 1_000_000
+    assert params["output_cost_per_token"] == 0.20 / 1_000_000
+
+
+def test_no_cost_params_when_cost_unset():
+    params = build_litellm_config(_reg(1))["model_list"][0]["litellm_params"]
+    assert "input_cost_per_token" not in params

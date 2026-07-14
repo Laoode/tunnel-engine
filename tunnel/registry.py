@@ -6,11 +6,17 @@ which merges defaults into instance blocks and fail-fast validates via Pydantic.
 from __future__ import annotations
 
 import os
+from collections import Counter
 from pathlib import Path
 from typing import Any, Optional
 
 import yaml
 from pydantic import BaseModel, Field, field_validator, model_validator
+
+
+def _find_duplicates(items: list) -> list:
+    """Return the sorted distinct values that appear more than once in items."""
+    return sorted(v for v, n in Counter(items).items() if n > 1)
 
 
 class LoRAModule(BaseModel):
@@ -58,6 +64,23 @@ class LMCacheInstanceConfig(BaseModel):
         return v
 
 
+class ModelCost(BaseModel):
+    """Per-token pricing used for spend tracking through the gateway.
+
+    Local GPU models use a synthetic amortized rate; remote models use the
+    provider's list price. Emitted into LiteLLM as cost-per-token.
+    """
+    input_per_mtok: float   # USD per 1M input tokens
+    output_per_mtok: float  # USD per 1M output tokens
+
+    @field_validator("input_per_mtok", "output_per_mtok")
+    @classmethod
+    def validate_non_negative(cls, v: float) -> float:
+        if v < 0:
+            raise ValueError(f"cost must be >= 0, got {v}")
+        return v
+
+
 class InstanceConfig(BaseModel):
     id: str
     model: str
@@ -78,6 +101,7 @@ class InstanceConfig(BaseModel):
     quantization: Optional[str] = None
     served_model_name: Optional[str] = None
     enable_thinking: bool = False
+    cost: Optional[ModelCost] = None
 
     @field_validator("port")
     @classmethod
@@ -162,6 +186,41 @@ class RemoteModelConfig(BaseModel):
     api_key_env: str              # env var NAME holding the key, e.g. "DEEPSEEK_API_KEY"
     provider: str = "openai"      # LiteLLM prefix; DeepSeek is OpenAI-compatible
     description: str = ""
+    cost: Optional[ModelCost] = None
+
+
+class TierConfig(BaseModel):
+    """Rate/budget limits and scheduling priority for one service tier."""
+    priority: int           # vLLM scheduling priority: lower = served earlier
+    rpm_limit: int
+    tpm_limit: int
+    max_budget: Optional[float] = None       # USD; None = unlimited
+    budget_duration: Optional[str] = None    # LiteLLM reset window, e.g. "30d"
+
+    @field_validator("priority")
+    @classmethod
+    def validate_priority(cls, v: int) -> int:
+        if v < 0:
+            raise ValueError(f"tier priority must be >= 0, got {v}")
+        return v
+
+    @field_validator("rpm_limit", "tpm_limit")
+    @classmethod
+    def validate_limits(cls, v: int) -> int:
+        if v < 1:
+            raise ValueError(f"tier rpm/tpm limits must be >= 1, got {v}")
+        return v
+
+
+class ServiceConfig(BaseModel):
+    """A consumer of the gateway, issued its own LiteLLM virtual key.
+
+    `models` restricts which registry ids the key may call; empty = all.
+    """
+    id: str
+    tier: str
+    models: list[str] = Field(default_factory=list)
+    description: str = ""
 
 
 class TunnelRegistry(BaseModel):
@@ -169,11 +228,12 @@ class TunnelRegistry(BaseModel):
     remote_models: list[RemoteModelConfig] = Field(default_factory=list)
     litellm: LiteLLMGatewayConfig = Field(default_factory=LiteLLMGatewayConfig)
     gpu: GPUConfig = Field(default_factory=GPUConfig)
+    tiers: dict[str, TierConfig] = Field(default_factory=dict)
+    services: list[ServiceConfig] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def validate_no_port_collisions(self) -> "TunnelRegistry":
-        ports = [inst.port for inst in self.instances]
-        dupes = sorted({p for p in ports if ports.count(p) > 1})
+        dupes = _find_duplicates([inst.port for inst in self.instances])
         if dupes:
             raise ValueError(f"Duplicate instance ports found: {dupes}")
         return self
@@ -185,7 +245,7 @@ class TunnelRegistry(BaseModel):
         ids = [inst.id for inst in self.instances] + [
             rm.id for rm in self.remote_models
         ]
-        dupes = sorted({i for i in ids if ids.count(i) > 1})
+        dupes = _find_duplicates(ids)
         if dupes:
             raise ValueError(f"Duplicate model IDs found (instances + remote): {dupes}")
         return self
@@ -234,6 +294,37 @@ class TunnelRegistry(BaseModel):
                 f"GPU memory over budget: {terms} = {total:.2f} > budget {self.gpu.budget:.2f}. "
                 "Reduce gpu_memory_utilization or raise gpu.budget in models.yaml."
             )
+        return self
+
+    @model_validator(mode="after")
+    def validate_services(self) -> "TunnelRegistry":
+        """Every service references a defined tier and known model ids, once."""
+        dupes = _find_duplicates([s.id for s in self.services])
+        if dupes:
+            raise ValueError(f"Duplicate service ids found: {dupes}")
+        # Ids like "a-b" and "a_b" collide once normalized to the keys.env
+        # variable name (SVC_A_B) and would silently share one virtual key.
+        env_dupes = _find_duplicates(
+            [s.id.upper().replace("-", "_") for s in self.services]
+        )
+        if env_dupes:
+            raise ValueError(
+                f"Service ids collide after '-'/'_' normalization: {env_dupes}"
+            )
+        valid_ids = {inst.id for inst in self.instances} | {
+            rm.id for rm in self.remote_models
+        }
+        for svc in self.services:
+            if svc.tier not in self.tiers:
+                raise ValueError(
+                    f"Service '{svc.id}' references unknown tier '{svc.tier}'. "
+                    f"Defined tiers: {sorted(self.tiers)}"
+                )
+            unknown = [m for m in svc.models if m not in valid_ids]
+            if unknown:
+                raise ValueError(
+                    f"Service '{svc.id}' models reference unknown IDs: {unknown}"
+                )
         return self
 
     def get_instance(self, instance_id: str) -> Optional[InstanceConfig]:

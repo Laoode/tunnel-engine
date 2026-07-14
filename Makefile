@@ -2,12 +2,14 @@ PYTHON      := python3
 REGISTRY    ?= configs/models.yaml
 LINT_PATHS  := tunnel/ tests/
 HF_CACHE    := ~/.cache/huggingface/hub/
+PG_DATA_DIR ?= /teamspace/studios/this_studio/.tunnel-pg
 
 export TUNNEL_REGISTRY := $(REGISTRY)
 
 .DEFAULT_GOAL := help
 
-.PHONY: help generate list health proxy serve test lint fmt check up stop down
+.PHONY: help generate list health proxy serve test lint fmt check up stop down \
+        db-up db-down keys-sync keys-list
 
 help:
 	@echo ""
@@ -58,6 +60,35 @@ stop: ## Stop ONE instance, leaving the others and the proxy running. Usage: mak
 down: ## Stop every instance (serve or up) and the proxy, then free the GPU
 	$(PYTHON) -m tunnel.cli down
 
+# Lightning's /teamspace drops EMPTY directories on studio restart, but Postgres
+# refuses to boot without them (pg_notify etc.), so recreate them before starting.
+PG_EMPTY_DIRS := pg_commit_ts pg_dynshmem pg_notify pg_replslot pg_serial \
+	pg_snapshots pg_stat pg_stat_tmp pg_tblspc pg_twophase \
+	pg_wal/archive_status pg_logical/mappings pg_logical/snapshots
+
+db-up: ## Start Postgres (Docker) for LiteLLM virtual keys; data persists in $(PG_DATA_DIR)
+	@PG_PASSWORD=$$(grep -E '^PG_PASSWORD=' .env 2>/dev/null | cut -d= -f2-); \
+	if [ -z "$$PG_PASSWORD" ]; then echo "ERROR: set PG_PASSWORD in .env (see .env.example)"; exit 1; fi; \
+	if [ -f $(PG_DATA_DIR)/PG_VERSION ]; then \
+		docker run --rm -v $(PG_DATA_DIR):/var/lib/postgresql/data postgres:16-alpine \
+			sh -c 'cd /var/lib/postgresql/data && for d in $(PG_EMPTY_DIRS); do \
+				mkdir -p "$$d" && chown postgres:postgres "$$d" && chmod 700 "$$d"; done'; \
+	fi; \
+	docker rm -f tunnel-pg >/dev/null 2>&1 || true; \
+	docker run -d --name tunnel-pg --restart unless-stopped -p 5433:5432 \
+		-e POSTGRES_USER=litellm -e POSTGRES_PASSWORD=$$PG_PASSWORD -e POSTGRES_DB=litellm \
+		-v $(PG_DATA_DIR):/var/lib/postgresql/data \
+		postgres:16-alpine
+
+db-down: ## Stop and remove the Postgres container (data persists in $(PG_DATA_DIR))
+	docker stop tunnel-pg && docker rm tunnel-pg
+
+keys-sync: ## Reconcile LiteLLM virtual keys with registry services (requires running proxy)
+	$(PYTHON) -m tunnel.cli keys sync
+
+keys-list: ## Per-service key status + spend (requires running proxy)
+	$(PYTHON) -m tunnel.cli keys list
+
 serve: ## Launch one vLLM instance in the foreground. Usage: make serve ID=<instance-id>
 	@if [ -z "$(ID)" ]; then \
 		echo "Usage: make serve ID=<instance-id>"; \
@@ -100,7 +131,8 @@ uninstall: ## Uninstall dependency
 	uv pip uninstall -r tunnel-engine/requirements/dev.txt -y
 
 kill:
-	pkill -f vllm
+	@pkill -9 -f -i vllm 2>/dev/null || true
+	@nvidia-smi --query-compute-apps=pid --format=csv,noheader | xargs -r kill -9
 
 view-models: ## List all cached models
 	@echo "Cached models:"

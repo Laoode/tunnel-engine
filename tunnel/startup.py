@@ -18,7 +18,7 @@ from tunnel.registry import InstanceConfig, TunnelRegistry
 
 log = structlog.get_logger(__name__)
 
-DEFAULT_TIMEOUT_S: float = 300.0    # 5 min — cold model loads can take 2-3 min
+DEFAULT_TIMEOUT_S: float = 1000.0   # cold loads exceed 5 min on Lightning's slow teamspace FS
 DEFAULT_POLL_INTERVAL_S: float = 5.0
 
 
