@@ -142,6 +142,9 @@ def build_serve_command(inst: InstanceConfig) -> list[str]:
     if inst.reasoning_parser:
         cmd += ["--reasoning-parser", inst.reasoning_parser]
 
+    if inst.scheduling_policy:
+        cmd += ["--scheduling-policy", inst.scheduling_policy]
+
     if inst.lmcache.enabled:
         # Register LMCache as vLLM's KV connector so KV blocks are offloaded to /
         # loaded from the LMCache tiers (CPU/disk/redis). Without this flag vLLM
@@ -319,8 +322,16 @@ def cmd_proxy() -> None:
         "--config", str(config_path),
         "--port",   str(registry.litellm.port),
     ]
+    env = os.environ.copy()
+    # The litellm entrypoint does not put the cwd on sys.path, but the
+    # generated config references tunnel.gateway.tier_hook by module path.
+    repo_root = str(Path.cwd())
+    env["PYTHONPATH"] = (
+        f"{repo_root}{os.pathsep}{env['PYTHONPATH']}"
+        if env.get("PYTHONPATH") else repo_root
+    )
     print(f">>  {' '.join(cmd)}\n", file=sys.stderr)
-    os.execvpe(cmd[0], cmd, os.environ.copy())
+    os.execvpe(cmd[0], cmd, env)
 
 
 def cmd_start(args: list[str]) -> None:

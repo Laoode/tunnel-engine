@@ -299,3 +299,12 @@ def test_cmd_stop_reports_not_running(monkeypatch, capsys):
 
     assert stop_calls == []
     assert "not running" in capsys.readouterr().err
+
+
+def test_scheduling_policy_flag_present_when_set():
+    cmd = build_serve_command(_minimal_instance(scheduling_policy="priority"))
+    assert cmd[cmd.index("--scheduling-policy") + 1] == "priority"
+
+
+def test_scheduling_policy_flag_absent_when_none():
+    assert "--scheduling-policy" not in build_serve_command(_minimal_instance())

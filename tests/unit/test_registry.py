@@ -334,3 +334,20 @@ def test_service_ids_colliding_after_env_normalization_rejected():
         load_registry(_write(_tiered_registry(
             services=[{"id": "a-b", "tier": "free"},
                       {"id": "a_b", "tier": "free"}])))
+
+
+def test_scheduling_policy_valid_values():
+    reg = load_registry(_write(_minimal_registry(
+        _minimal_instance(scheduling_policy="priority"))))
+    assert reg.instances[0].scheduling_policy == "priority"
+
+
+def test_invalid_scheduling_policy_rejected():
+    with pytest.raises(Exception, match="scheduling_policy"):
+        load_registry(_write(_minimal_registry(
+            _minimal_instance(scheduling_policy="weighted-fair"))))
+
+
+def test_scheduling_policy_defaults_to_none():
+    reg = load_registry(_write(_minimal_registry()))
+    assert reg.instances[0].scheduling_policy is None

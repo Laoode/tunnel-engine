@@ -167,3 +167,15 @@ def test_cost_emitted_as_per_token():
 def test_no_cost_params_when_cost_unset():
     params = build_litellm_config(_reg(1))["model_list"][0]["litellm_params"]
     assert "input_cost_per_token" not in params
+
+
+def test_tier_hook_callback_emitted_when_tiers_defined():
+    cfg = build_litellm_config(_reg_with_services())
+    assert cfg["litellm_settings"]["callbacks"] == [
+        "tier_hook.tier_priority_handler"
+    ]
+
+
+def test_no_callbacks_key_without_tiers_or_prometheus():
+    cfg = build_litellm_config(_reg(1))
+    assert "callbacks" not in cfg["litellm_settings"]

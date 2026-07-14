@@ -97,9 +97,18 @@ def build_litellm_config(registry: TunnelRegistry) -> dict:
     if fallbacks:
         router_settings["fallbacks"] = fallbacks
 
+    callbacks: list[str] = []
     if registry.litellm.prometheus:
         # Enables /metrics on the proxy port. Requires: pip install prometheus-client
-        litellm_settings["callbacks"] = ["prometheus"]
+        callbacks.append("prometheus")
+    if registry.tiers:
+        # Pre-call hook mapping key tier metadata -> vLLM request priority.
+        # LiteLLM resolves custom callback modules RELATIVE TO THE CONFIG FILE's
+        # directory, so this names a generated shim written next to the config
+        # (see write_litellm_config), which imports tunnel.gateway.tier_hook.
+        callbacks.append("tier_hook.tier_priority_handler")
+    if callbacks:
+        litellm_settings["callbacks"] = callbacks
 
     general_settings: dict = {
         "master_key": registry.litellm.master_key,
@@ -137,4 +146,15 @@ def write_litellm_config(
     out.write_text(
         _AUTO_HEADER + yaml.dump(config, default_flow_style=False, sort_keys=False)
     )
+    shim = out.parent / "tier_hook.py"
+    if registry.tiers:
+        # LiteLLM loads custom callbacks from files relative to the config dir;
+        # the shim bridges to the real module (importable via PYTHONPATH, which
+        # cmd_proxy sets to the repo root).
+        shim.write_text(
+            "# AUTO-GENERATED shim (see tunnel/gateway/config_builder.py).\n"
+            "from tunnel.gateway.tier_hook import tier_priority_handler  # noqa: F401\n"
+        )
+    else:
+        shim.unlink(missing_ok=True)
     return out

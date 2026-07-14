@@ -45,3 +45,5 @@ litellm_settings:
   request_timeout: 120
   drop_params: true
   require_auth_for_metrics_endpoint: false
+  callbacks:
+  - tier_hook.tier_priority_handler

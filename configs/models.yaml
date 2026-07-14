@@ -11,6 +11,10 @@ defaults:
   dtype: "auto"
   max_model_len: 16384
   enable_thinking: false
+  # Strict-priority scheduling: enterprise requests preempt lower tiers.
+  # vLLM caveat: priority + n>1 crashes the engine (vllm#29747); no service
+  # sends n>1. Override per instance with fcfs if a model misbehaves.
+  scheduling_policy: priority
   lora:
     enabled: false
     modules: []

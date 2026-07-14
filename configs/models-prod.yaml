@@ -11,6 +11,7 @@ defaults:
   dtype: "auto"
   max_model_len: 16384
   enable_thinking: false
+  scheduling_policy: priority  # see models.yaml for caveats
   lora:
     enabled: false
     modules: []

@@ -102,6 +102,17 @@ class InstanceConfig(BaseModel):
     served_model_name: Optional[str] = None
     enable_thinking: bool = False
     cost: Optional[ModelCost] = None
+    scheduling_policy: Optional[str] = None  # None = vLLM default (fcfs)
+
+    @field_validator("scheduling_policy")
+    @classmethod
+    def validate_scheduling_policy(cls, v: Optional[str]) -> Optional[str]:
+        allowed = {"fcfs", "priority"}
+        if v is not None and v not in allowed:
+            raise ValueError(
+                f"scheduling_policy must be one of {allowed}, got '{v}'"
+            )
+        return v
 
     @field_validator("port")
     @classmethod
