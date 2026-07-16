@@ -25,7 +25,7 @@
   <img src="https://img.shields.io/badge/Kubernetes-Service_Mesh-326CE5?logo=kubernetes&logoColor=white" />
   <img src="https://img.shields.io/badge/KEDA-Autoscaling-FF4500?logo=keda&logoColor=white" />
   <img src="https://img.shields.io/badge/Redis-Distributed%20Cache-DC382D?logo=redis&logoColor=red" />
-  <img src="https://img.shields.io/badge/MinIO-Model_Storage-darkred?logo=minio&logoColor=darkred" />
+  <img src="https://img.shields.io/badge/Wasabi-Model_Storage-00C425?logo=wasabi&logoColor=white" />
   <img src="https://img.shields.io/badge/Prometheus-Metrics-E6522C?logo=prometheus&logoColor=orange" />
   <img src="https://img.shields.io/badge/Grafana-Observability-F46800?logo=grafana&logoColor=orange" />
   <img src="https://img.shields.io/badge/Docker-Containerized-2496ED?logo=docker&logoColor=blue" />
@@ -51,6 +51,8 @@ LMCache acts as the extender for vLLM. To store the KV-cache precisely, we need 
 
 LiteLLM is used for intelligent load balancing. While vLLM runs on multiple separate ports (e.g., ports 8000, 8001, 8002), LiteLLM wraps all of these ports into a single endpoint URL (e.g., port 4000) for all our microservices to call. Additionally, if a model in a specific service crashes (e.g., Out of Memory), we can set up alternative fallback models to handle the requests seamlessly without pausing the service.
 
+Model weights don't have to live on local disk. With the Run:ai Model Streamer, an instance can stream its weights straight from any S3-compatible bucket (Wasabi, Cloudflare R2, Backblaze B2, MinIO) into VRAM at startup — no HF download, no disk copy (a 9.3 GB model streams in ~15s). Set `model: s3://bucket/path` + `load_format: runai_streamer` in `configs/models.yaml` and the S3 credentials in `.env`; switching storage providers is an `.env`-only change. See `docs/s3-llm.md` for the provider evaluation and setup guide.
+
 Architecture (what we need):
 ```
    Our services        ┌───────────────────────────┐
@@ -72,9 +74,10 @@ Architecture (what we need):
                         │  Kubernetes Service Mesh  │  ← K8s Load Balancer    | [Optional rn]        │
                         └─────────────┬─────────────┘                                                │
 ┌─────────────────────┐               │                                                              │
-│ MinIO Model Storage │               │                                                              │
+│  S3 Model Storage   │               │                                                              │
+│ (Wasabi/R2/B2/MinIO)│               │                                                              │
 └───▲─────────────────┘               │                                                              │
-    |               ┌─────────────────▼─────────────────┐                                            │
+    | runai_streamer┌─────────────────▼─────────────────┐                                            │
     |               │                                   │                                            │
     |  ┌────────────▼──────────┐             ┌──────────▼────────────┐                               │
     |  │   vLLM Pod 1 :8000    │             │   vLLM Pod 2 :8001    │ ← Autoscaled via KEDA         │
@@ -251,13 +254,6 @@ make db-up       # start Postgres (Docker, :5433) - stores keys + spend logs
 make keys-sync   # create/reconcile one virtual key per registry service
 make keys-list   # per-service key status, tier, allowed models, and spend
 ```
-
-Key secrets are written to `.tunnel/keys.env` (gitignored, chmod 600) as
-`SVC_<ID>=sk-...`. That file is the **only** copy: hand each service its own key from
-there. The `LITELLM_MASTER_KEY` is for administration (key sync, debugging) only -
-never ship it to a service, since it bypasses every limit and allowlist. Exceeding a
-tier's rpm/tpm returns HTTP 429; calling a model outside the key's allowlist returns
-403. See `docs/PLAYBOOK.md` for the full workflow.
 
 ## Calling Tunnel Engine from your service
 
