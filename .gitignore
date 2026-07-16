@@ -48,6 +48,8 @@ MEMORY.md
 docs/*
 !docs/lmcache.md
 !docs/deepseek.md
+!docs/s3-llm.md
+!docs/PLAYBOOK.md
 
 # Test artifacts
 .coverage
