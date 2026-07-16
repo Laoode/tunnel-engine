@@ -1,7 +1,7 @@
 PYTHON      := python3
 REGISTRY    ?= configs/models.yaml
 LINT_PATHS  := tunnel/ tests/
-HF_CACHE    := ~/.cache/huggingface/hub/
+HF_CACHE    := $(HOME)/.cache/huggingface/hub/
 PG_DATA_DIR ?= /teamspace/studios/this_studio/.tunnel-pg
 
 export TUNNEL_REGISTRY := $(REGISTRY)
@@ -133,12 +133,6 @@ loadtest: ## Open-loop load generator (RATE/DURATION/MIX/TIER_MIX env vars; runn
 
 loadtest-plots: ## Render analysis PNGs from loadgen results
 	$(PYTHON) tests/services/loadgen/plots.py
-
-guard-dataset: ## Generate Indonesian guardrail eval dataset via DeepSeek v4 Pro (needs DEEPSEEK_API_KEY)
-	$(PYTHON) tests/services/guardbench/dataset.py
-
-guard-judge: ## Audit the guardrail dataset with Sonnet 5 as LLM-judge (needs claude CLI)
-	$(PYTHON) tests/services/guardbench/judge.py
 
 guard-bench: ## Benchmark XGuard latency + accuracy on the judged dataset (needs a running fleet)
 	$(PYTHON) tests/services/guardbench/main.py
