@@ -63,6 +63,21 @@ def test_quantization_flag_absent_when_none():
     assert "--quantization" not in cmd
 
 
+def test_load_format_flag_present_when_set():
+    cmd = build_serve_command(_minimal_instance(
+        model="s3://bucket/test-model",
+        load_format="runai_streamer",
+        served_model_name="test-model",
+    ))
+    assert "--load-format" in cmd
+    assert cmd[cmd.index("--load-format") + 1] == "runai_streamer"
+
+
+def test_load_format_flag_absent_when_none():
+    cmd = build_serve_command(_minimal_instance())
+    assert "--load-format" not in cmd
+
+
 def test_served_model_name_flag_present_when_set():
     cmd = build_serve_command(_minimal_instance(served_model_name="custom-name"))
     assert "--served-model-name" in cmd

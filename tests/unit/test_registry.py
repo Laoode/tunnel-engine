@@ -60,6 +60,33 @@ def test_instance_overrides_default():
     reg = load_registry(_write(data))
     assert reg.instances[0].gpu_memory_utilization == 0.35
 
+# S3-streamed models
+def test_s3_model_valid_when_fully_configured():
+    reg = load_registry(_write(_minimal_registry(_minimal_instance(
+        model="s3://bucket/test-model",
+        load_format="runai_streamer",
+        served_model_name="test-model",
+    ))))
+    assert reg.instances[0].load_format == "runai_streamer"
+
+def test_s3_model_without_load_format_rejected():
+    with pytest.raises(Exception, match="load_format"):
+        load_registry(_write(_minimal_registry(_minimal_instance(
+            model="s3://bucket/test-model",
+            served_model_name="test-model",
+        ))))
+
+def test_s3_model_without_served_model_name_rejected():
+    with pytest.raises(Exception, match="served_model_name"):
+        load_registry(_write(_minimal_registry(_minimal_instance(
+            model="s3://bucket/test-model",
+            load_format="runai_streamer",
+        ))))
+
+def test_load_format_defaults_to_none_for_hf_models():
+    reg = load_registry(_write(_minimal_registry()))
+    assert reg.instances[0].load_format is None
+
 # Collision guards
 def test_duplicate_ports_rejected():
     with pytest.raises(Exception, match="[Dd]uplicate.*port"):

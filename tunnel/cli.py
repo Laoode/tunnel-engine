@@ -135,6 +135,9 @@ def build_serve_command(inst: InstanceConfig) -> list[str]:
     if inst.quantization:
         cmd += ["--quantization", inst.quantization]
 
+    if inst.load_format:
+        cmd += ["--load-format", inst.load_format]
+
     if inst.served_model_name:
         cmd += ["--served-model-name", inst.served_model_name]
 
@@ -195,6 +198,16 @@ def cmd_serve(instance_id: str) -> None:
     """
     registry = load_registry(registry_path())
     inst = _require_instance(registry, instance_id)
+
+    if inst.model.startswith("s3://") and not (
+        os.environ.get("AWS_ACCESS_KEY_ID") and os.environ.get("AWS_SECRET_ACCESS_KEY")
+    ):
+        # A credless s3 launch can never succeed; failing here avoids a doomed
+        # vLLM startup (and any partial-download egress billing on the bucket).
+        _die(
+            f"instance '{inst.id}' streams from S3 but AWS_ACCESS_KEY_ID / "
+            "AWS_SECRET_ACCESS_KEY are unset. Set them in .env (see .env.example)."
+        )
 
     if inst.chat_template and not Path(inst.chat_template).exists():
         print(

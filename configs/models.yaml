@@ -70,6 +70,30 @@ instances:
     extra_args: ["--enforce-eager", "--max-num-seqs", "16"]  # skip CUDA graphs to fit 0.10
     description: "YuFeng XGuard 0.6B – gateway content-safety classifier (internal)"
 
+  # S3-streamed model (Wasabi S3 via Run:ai streamer): weights stream straight
+  # from the bucket into VRAM at startup — no local HF download, no disk copy.
+  # Provider-agnostic: the AWS_* / RUNAI_STREAMER_* vars in .env select the
+  # backend (see docs/s3-llm.md). Requires runai-model-streamer[s3].
+  # Verified live 2026-07-16: Wasabi stream (9.3GB/15s) -> healthy -> completion
+  # via gateway :4000. At 0.90 gpu it only fits the L4 solo; free capacity first.
+  # - id: qwen3.5-4b-s3
+  #   model: s3://llm-qwen3.5-4b-bucket/Qwen3.5-4B
+  #   served_model_name: Qwen3.5-4B
+  #   load_format: runai_streamer
+  #   port: 8003
+  #   gpu_memory_utilization: 0.90   # sized for solo serving; shrink to co-exist
+  #   max_model_len: 4096
+  #   attention_backend: FLASHINFER
+  #   lmcache:
+  #     enabled: false  # Qwen3.5 hybrid attention breaks the LMCache connector (same as qwen-0.8b)
+  #   extra_args: ["--trust-remote-code", "--enable-chunked-prefill",
+  #                "--enable-prefix-caching", "--max-num-batched-tokens", "4096",
+  #                "--max-num-seqs", "4"]
+  #   cost:             # synthetic amortized GPU rate (USD per 1M tokens) for spend tracking
+  #     input_per_mtok: 0.05
+  #     output_per_mtok: 0.20
+  #   description: "Qwen 3.5 4B – streamed from S3 object storage, no local disk"
+
   # Add more instances below. Examples:
   #
   # Standard model:

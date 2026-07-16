@@ -104,6 +104,7 @@ class InstanceConfig(BaseModel):
     reasoning_parser: Optional[str] = None
     quantization: Optional[str] = None
     served_model_name: Optional[str] = None
+    load_format: Optional[str] = None  # vLLM --load-format; None = vLLM default (auto)
     enable_thinking: bool = False
     cost: Optional[ModelCost] = None
     scheduling_policy: Optional[str] = None  # None = vLLM default (fcfs)
@@ -117,6 +118,29 @@ class InstanceConfig(BaseModel):
                 f"scheduling_policy must be one of {allowed}, got '{v}'"
             )
         return v
+
+    @model_validator(mode="after")
+    def validate_s3_model(self) -> "InstanceConfig":
+        """Fail fast on s3:// models missing the settings vLLM needs to serve them.
+
+        vLLM only loads s3:// paths through the Run:ai streamer, and without a
+        served_model_name the model id defaults to the raw s3 path, which breaks
+        both client calls and the generated LiteLLM model_list entry.
+        """
+        if not self.model.startswith("s3://"):
+            return self
+        allowed = {"runai_streamer", "runai_streamer_sharded"}
+        if self.load_format not in allowed:
+            raise ValueError(
+                f"Instance '{self.id}' uses an s3:// model and must set "
+                f"load_format to one of {allowed}, got '{self.load_format}'."
+            )
+        if not self.served_model_name:
+            raise ValueError(
+                f"Instance '{self.id}' uses an s3:// model and must set "
+                "served_model_name (otherwise the model id is the raw s3 path)."
+            )
+        return self
 
     @field_validator("port")
     @classmethod
