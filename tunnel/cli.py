@@ -20,11 +20,11 @@ import asyncio
 import os
 import sys
 import json
+import time
 from pathlib import Path
 
 import httpx
 
-from tunnel.cache.lmcache_config import write_lmcache_configs
 from tunnel.gateway.config_builder import write_litellm_config
 from tunnel.gateway.keys import KEYS_ENV_PATH, fetch_key_overview, sync_keys
 from tunnel.observability.prometheus_config import write_prometheus_config
@@ -37,6 +37,8 @@ from tunnel.orchestrator import (
     find_listening_pids,
     is_alive,
     launch_instance,
+    launch_lmcache_server,
+    lmcache_server_name,
     read_pid,
     stop_instance,
 )
@@ -151,42 +153,73 @@ def build_serve_command(inst: InstanceConfig) -> list[str]:
         cmd += ["--scheduling-policy", inst.scheduling_policy]
 
     if inst.lmcache.enabled:
-        # Register LMCache as vLLM's KV connector so KV blocks are offloaded to /
-        # loaded from the LMCache tiers (CPU/disk/redis). Without this flag vLLM
-        # ignores LMCACHE_CONFIG_FILE entirely and only its in-GPU prefix cache runs.
+        # Register LMCache (multi-process mode) as vLLM's KV connector: KV
+        # blocks are offloaded to / loaded from this instance's `lmcache
+        # server` process on lmcache.port. The MP connector supports
+        # hybrid-attention models (Qwen3.5 Mamba+Full, Gemma 4 SWA+Full)
+        # which crashed the old in-process LMCacheConnectorV1.
         # kv_both = this instance both stores and retrieves (single-node offload).
         cmd += ["--kv-transfer-config",
-                json.dumps({"kv_connector": "LMCacheConnectorV1", "kv_role": "kv_both"})]
+                json.dumps({
+                    "kv_connector": "LMCacheMPConnector",
+                    "kv_role": "kv_both",
+                    "kv_connector_extra_config": {
+                        "lmcache.mp.host": "tcp://localhost",
+                        "lmcache.mp.port": inst.lmcache.port,
+                    },
+                })]
+        if inst.lmcache.mamba_align:
+            # Mamba-hybrid prefix caching (docs/lmcache.md): align recurrent
+            # states to cacheable pages; batched tokens 2N-1 keeps scheduler
+            # throughput while matching the unified block size N (chunk_size).
+            cmd += [
+                "--enable-prefix-caching",
+                "--mamba-cache-mode", "align",
+                "--max-num-batched-tokens", str(2 * inst.lmcache.chunk_size - 1),
+            ]
 
     cmd.extend(inst.extra_args)
 
     return cmd
 
 
-def _inject_redis_env(inst: InstanceConfig, env: dict) -> None:
-    """Assemble LMCACHE_REMOTE_URL/SERDE into `env` from LMCACHE_REDIS_HOST/PORT.
+LMCACHE_START_TIMEOUT_S = 60.0
 
-    Redis host/port are environment-specific (never committed); LMCache merges
-    these env vars over the config file. Warns and degrades to the local CPU
-    tier when the host is unset.
+
+def _ensure_lmcache_server(inst: InstanceConfig) -> None:
+    """Make sure the instance's LMCache server is up before vLLM connects.
+
+    Reuses a live listener on lmcache.port (idempotent across relaunches);
+    otherwise launches the server and waits for its ZMQ port. Exits nonzero
+    on timeout: vLLM's MP connector cannot start without its server.
 
     Args:
-        inst: The InstanceConfig being launched.
-        env: Environment dict passed to os.execvpe, mutated in place.
+        inst: The InstanceConfig being launched, with lmcache.enabled.
     """
-    if inst.lmcache.backend != "redis":
+    if find_listening_pid(inst.lmcache.port) is not None:
+        print(f".  lmcache server already listening on :{inst.lmcache.port}",
+              file=sys.stderr)
         return
-    host = env.get("LMCACHE_REDIS_HOST")
-    if not host:
+    if inst.lmcache.backend == "redis" and not os.environ.get("LMCACHE_REDIS_HOST"):
         print(
             f"WARN: instance '{inst.id}' uses lmcache.backend=redis but "
-            "LMCACHE_REDIS_HOST is unset. Falling back to the local CPU tier only.",
+            "LMCACHE_REDIS_HOST is unset. Starting with the local L1 tier only.",
             file=sys.stderr,
         )
-        return
-    port = env.get("LMCACHE_REDIS_PORT", "6379")
-    env["LMCACHE_REMOTE_URL"] = f"redis://{host}:{port}"
-    env["LMCACHE_REMOTE_SERDE"] = inst.lmcache.remote_serde
+    pid = launch_lmcache_server(inst)
+    name = lmcache_server_name(inst.id)
+    print(f".  {name}  launched (pid {pid}, zmq :{inst.lmcache.port}) "
+          f"-> logs/{name}.log", file=sys.stderr)
+    deadline = time.monotonic() + LMCACHE_START_TIMEOUT_S
+    while time.monotonic() < deadline:
+        if find_listening_pid(inst.lmcache.port) is not None:
+            return
+        if not is_alive(pid):
+            _die(f"lmcache server for '{inst.id}' exited during startup "
+                 f"-- check logs/{name}.log")
+        time.sleep(0.5)
+    _die(f"lmcache server for '{inst.id}' did not open :{inst.lmcache.port} "
+         f"within {LMCACHE_START_TIMEOUT_S}s -- check logs/{name}.log")
 
 
 def cmd_serve(instance_id: str) -> None:
@@ -218,21 +251,11 @@ def cmd_serve(instance_id: str) -> None:
 
     cmd = build_serve_command(inst)
 
-    env = os.environ.copy()
     if inst.lmcache.enabled:
-        lmcache_cfg_path = Path(f"configs/lmcache/{inst.id}.yaml")
-        if lmcache_cfg_path.exists():
-            env["LMCACHE_CONFIG_FILE"] = str(lmcache_cfg_path)
-            _inject_redis_env(inst, env)
-        else:
-            print(
-                f"WARN: LMCache config not found at '{lmcache_cfg_path}'. "
-                "Run `make generate` first. Launching without LMCache.",
-                file=sys.stderr,
-            )
+        _ensure_lmcache_server(inst)
 
     print(f">>  {' '.join(cmd)}\n", file=sys.stderr)
-    os.execvpe(cmd[0], cmd, env)
+    os.execvpe(cmd[0], cmd, os.environ.copy())
 
 
 def cmd_health() -> None:
@@ -261,10 +284,6 @@ def cmd_generate() -> None:
 
     litellm_path = write_litellm_config(registry, LITELLM_CONFIG)
     print(f"  LiteLLM config    -> {litellm_path}")
-
-    lmcache_paths = write_lmcache_configs(registry)
-    for p in lmcache_paths:
-        print(f"  LMCache config    -> {p}")
 
     prometheus_path = write_prometheus_config(registry)
     print(f"  Prometheus config -> {prometheus_path}")
@@ -521,8 +540,15 @@ def cmd_down(_: list[str]) -> None:
     stop_instance's SIGTERM-then-SIGKILL escalation applies to everything.
     """
     registry = load_registry(registry_path())
+    lmcache_ports = {
+        inst.id: inst.lmcache.port
+        for inst in registry.instances
+        if inst.lmcache.enabled and inst.lmcache.port is not None
+    }
     listeners = find_listening_pids(
-        {inst.port for inst in registry.instances} | {registry.litellm.port}
+        {inst.port for inst in registry.instances}
+        | set(lmcache_ports.values())
+        | {registry.litellm.port}
     )
     stopped = 0
 
@@ -537,6 +563,12 @@ def cmd_down(_: list[str]) -> None:
         if listening_pid is not None and is_alive(listening_pid):
             _stop_untracked(inst.id, inst.port, listening_pid)
             stopped += 1
+        cache_port = lmcache_ports.get(inst.id)
+        if cache_port is not None:
+            cache_pid = listeners.get(cache_port)
+            if cache_pid is not None and is_alive(cache_pid):
+                _stop_untracked(lmcache_server_name(inst.id), cache_port, cache_pid)
+                stopped += 1
 
     proxy_pid = listeners.get(registry.litellm.port)
     if proxy_pid is not None and is_alive(proxy_pid):
@@ -552,7 +584,9 @@ def cmd_stop(instance_id: str) -> None:
 
     Resolves the target like `cmd_down`: tracked pidfile plus any untracked
     listener on its port. The proxy keeps advertising the stopped model in
-    /v1/models until the registry is edited and regenerated.
+    /v1/models until the registry is edited and regenerated. The instance's
+    LMCache server (if any) is deliberately left running so the KV cache
+    survives an instance restart; `tunnel down` stops it.
 
     Args:
         instance_id: The registry id of the instance to stop.

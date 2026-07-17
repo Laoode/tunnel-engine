@@ -1,9 +1,8 @@
-import tempfile
-
-import pytest
+"""Tests for build_lmcache_server_command (LMCache MP server argv)."""
+import json
 
 from tunnel.registry import TunnelRegistry
-from tunnel.cache.lmcache_config import build_lmcache_config, write_lmcache_configs
+from tunnel.cache.lmcache_config import build_lmcache_server_command
 
 
 def _reg(instances):
@@ -16,54 +15,54 @@ def _inst(backend, **lmcache):
     return {"id": "m", "model": "x", "port": 8000, "gpu_memory_utilization": 0.4, "lmcache": base}
 
 
-def test_cpu_backend_enables_local_cpu_flat_schema():
-    cfg = build_lmcache_config(_reg([_inst("cpu")]).instances[0])
-    assert cfg["local_cpu"] is True                 # flat bool, not nested dict
-    assert cfg["max_local_cpu_size"] == 10.0        # GB as float
-    assert "local_disk" not in cfg
-    assert "remote_serde" not in cfg
+def _flag(cmd, name):
+    return cmd[cmd.index(name) + 1]
 
 
-def test_disk_backend_sets_path_and_disables_cpu():
+def test_cpu_backend_l1_only():
+    cmd = build_lmcache_server_command(_reg([_inst("cpu")]).instances[0], env={})
+    assert cmd[:2] == ["lmcache", "server"]
+    assert _flag(cmd, "--port") == "9000"           # instance port + 1000 default
+    assert _flag(cmd, "--http-port") == "10000"     # zmq port + 1000
+    assert _flag(cmd, "--l1-size-gb") == "10"
+    assert _flag(cmd, "--chunk-size") == "256"
+    assert _flag(cmd, "--eviction-policy") == "LRU"
+    assert "--l2-adapter" not in cmd
+
+
+def test_explicit_port_wins_over_derived_default():
+    cmd = build_lmcache_server_command(
+        _reg([_inst("cpu", port=6555)]).instances[0], env={}
+    )
+    assert _flag(cmd, "--port") == "6555"
+    assert _flag(cmd, "--http-port") == "7555"
+
+
+def test_disk_backend_adds_fs_l2_adapter():
     inst = _reg([{**_inst("disk"), "id": "my-model"}]).instances[0]
-    cfg = build_lmcache_config(inst)
-    assert cfg["local_cpu"] is False
-    assert cfg["local_disk"] == "/tmp/lmcache/my-model"
-    assert cfg["max_local_disk_size"] == 10.0
+    cmd = build_lmcache_server_command(inst, env={})
+    adapter = json.loads(_flag(cmd, "--l2-adapter"))
+    assert adapter == {"type": "fs", "path": "/tmp/lmcache/my-model"}
 
 
-def test_redis_backend_keeps_cpu_tier_and_sets_serde():
-    cfg = build_lmcache_config(_reg([_inst("redis", remote_serde="naive")]).instances[0])
-    assert cfg["local_cpu"] is True                 # L1 CPU tier stays on
-    assert cfg["remote_serde"] == "naive"
-    # remote_url is injected at serve time from env, never baked into the file.
-    assert "remote_url" not in cfg
+def test_redis_backend_adds_resp_l2_adapter_from_env():
+    cmd = build_lmcache_server_command(
+        _reg([_inst("redis")]).instances[0],
+        env={"LMCACHE_REDIS_HOST": "cache.internal", "LMCACHE_REDIS_PORT": "6380"},
+    )
+    adapter = json.loads(_flag(cmd, "--l2-adapter"))
+    assert adapter == {"type": "resp", "host": "cache.internal", "port": 6380}
 
 
-def test_write_skips_disabled_instances():
-    reg = _reg([
-        {**_inst("cpu"), "id": "on", "port": 8000},
-        {**_inst("cpu"), "id": "off", "port": 8001, "lmcache": {"enabled": False, "backend": "cpu"}},
-    ])
-    with tempfile.TemporaryDirectory() as d:
-        written = write_lmcache_configs(reg, d)
-        assert len(written) == 1
-        assert written[0].stem == "on"
+def test_redis_backend_degrades_to_l1_without_host():
+    # Host/port are environment-specific and never committed; without them the
+    # server still starts with the local L1 tier only (caller warns).
+    cmd = build_lmcache_server_command(_reg([_inst("redis")]).instances[0], env={})
+    assert "--l2-adapter" not in cmd
 
 
-@pytest.mark.parametrize("backend", ["cpu", "disk", "redis"])
-def test_generated_config_is_accepted_by_lmcache(backend):
-    """Guard against schema drift: LMCache 0.4.x must parse what we emit.
-
-    The previous nested schema silently raised TypeError inside LMCache, so KV
-    caching never actually ran. This asserts the flat schema loads cleanly.
-    """
-    lmcache_config = pytest.importorskip("lmcache.v1.config")
-    import yaml
-
-    cfg = build_lmcache_config(_reg([_inst(backend)]).instances[0])
-    with tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False) as f:
-        yaml.dump(cfg, f)
-        path = f.name
-    loaded = lmcache_config.LMCacheEngineConfig.from_file(path)
-    assert loaded.chunk_size == 256
+def test_custom_eviction_policy_passthrough():
+    cmd = build_lmcache_server_command(
+        _reg([_inst("cpu", eviction_policy="IsolatedLRU")]).instances[0], env={}
+    )
+    assert _flag(cmd, "--eviction-policy") == "IsolatedLRU"

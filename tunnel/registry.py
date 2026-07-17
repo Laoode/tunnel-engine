@@ -39,11 +39,29 @@ class LoRAConfig(BaseModel):
 
 
 class LMCacheInstanceConfig(BaseModel):
+    """Per-instance LMCache settings (multi-process architecture).
+
+    Each enabled instance gets its own `lmcache server` process (ZMQ) that the
+    vLLM LMCacheMPConnector talks to. The server owns the cache tiers: L1 is
+    CPU RAM (max_cache_size_gb); backend "disk"/"redis" adds an L2 adapter.
+
+    Hybrid-attention models (Qwen3.5 Mamba+Full, Gemma 4 SWA+Full) are
+    supported by the MP connector. Mamba hybrids additionally require
+    mamba_align: true and chunk_size equal to the model's unified attention
+    block size N (vLLM prints "Setting attention block size to N tokens" at
+    startup). See docs/lmcache.md.
+    """
     enabled: bool = True
     backend: str = "cpu"
     max_cache_size_gb: int = 20
     chunk_size: int = 256
-    remote_serde: str = "naive"  # only used when backend == "redis"
+    # ZMQ port for this instance's LMCache server. None resolves to the
+    # instance port + 1000 (validated against all other ports).
+    port: Optional[int] = None
+    # Mamba-hybrid prefix caching (Qwen3.5/3.6): emits --mamba-cache-mode
+    # align, --enable-prefix-caching, and --max-num-batched-tokens 2N-1.
+    mamba_align: bool = False
+    eviction_policy: str = "LRU"
 
     @field_validator("backend")
     @classmethod
@@ -53,14 +71,21 @@ class LMCacheInstanceConfig(BaseModel):
             raise ValueError(f"lmcache.backend must be one of {allowed}, got '{v}'")
         return v
 
-    @field_validator("remote_serde")
+    @field_validator("eviction_policy")
     @classmethod
-    def validate_remote_serde(cls, v: str) -> str:
-        allowed = {"naive", "cachegen"}
+    def validate_eviction_policy(cls, v: str) -> str:
+        allowed = {"LRU", "IsolatedLRU", "noop"}
         if v not in allowed:
             raise ValueError(
-                f"lmcache.remote_serde must be one of {allowed}, got '{v}'"
+                f"lmcache.eviction_policy must be one of {allowed}, got '{v}'"
             )
+        return v
+
+    @field_validator("chunk_size")
+    @classmethod
+    def validate_chunk_size(cls, v: int) -> int:
+        if v < 1:
+            raise ValueError(f"lmcache.chunk_size must be >= 1, got {v}")
         return v
 
 
@@ -118,6 +143,24 @@ class InstanceConfig(BaseModel):
                 f"scheduling_policy must be one of {allowed}, got '{v}'"
             )
         return v
+
+    @model_validator(mode="after")
+    def resolve_lmcache_port(self) -> "InstanceConfig":
+        """Default the LMCache server port to instance port + 1000.
+
+        Explicit lmcache.port always wins. The +1000 offset keeps the derived
+        ports out of the 8000-range vLLM band; cross-instance collisions are
+        still validated at the registry level.
+        """
+        if self.lmcache.enabled and self.lmcache.port is None:
+            self.lmcache.port = self.port + 1000
+        # Upper bound leaves room for the derived HTTP frontend port (+1000).
+        if self.lmcache.port is not None and not (1024 <= self.lmcache.port <= 64535):
+            raise ValueError(
+                f"Instance '{self.id}' lmcache.port {self.lmcache.port} is out "
+                "of valid range [1024, 64535]."
+            )
+        return self
 
     @model_validator(mode="after")
     def validate_s3_model(self) -> "InstanceConfig":
@@ -320,9 +363,22 @@ class TunnelRegistry(BaseModel):
 
     @model_validator(mode="after")
     def validate_no_port_collisions(self) -> "TunnelRegistry":
-        dupes = _find_duplicates([inst.port for inst in self.instances])
+        """Instance ports and LMCache server ports must all be distinct.
+
+        LMCache ZMQ ports default to instance port + 1000 and each server's
+        HTTP frontend binds ZMQ port + 1000, so a fleet spanning a 1000-port
+        range (e.g. 8000 and 9000) would silently collide without this check.
+        """
+        lmcache_ports: list[int] = []
+        for inst in self.instances:
+            if inst.lmcache.enabled and inst.lmcache.port is not None:
+                lmcache_ports += [inst.lmcache.port, inst.lmcache.port + 1000]
+        ports = [inst.port for inst in self.instances] + lmcache_ports
+        dupes = _find_duplicates(ports)
         if dupes:
-            raise ValueError(f"Duplicate instance ports found: {dupes}")
+            raise ValueError(
+                f"Duplicate ports found (instance + lmcache server): {dupes}"
+            )
         return self
 
     @model_validator(mode="after")
@@ -344,6 +400,11 @@ class TunnelRegistry(BaseModel):
                 raise ValueError(
                     f"Instance '{inst.id}' port {inst.port} collides with "
                     f"LiteLLM proxy port {self.litellm.port}."
+                )
+            if inst.lmcache.enabled and inst.lmcache.port == self.litellm.port:
+                raise ValueError(
+                    f"Instance '{inst.id}' lmcache.port {inst.lmcache.port} "
+                    f"collides with LiteLLM proxy port {self.litellm.port}."
                 )
         return self
 

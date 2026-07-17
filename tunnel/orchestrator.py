@@ -16,6 +16,7 @@ from pathlib import Path
 
 import psutil
 
+from tunnel.cache.lmcache_config import build_lmcache_server_command
 from tunnel.registry import InstanceConfig
 
 PID_DIR = Path(".tunnel")
@@ -33,15 +34,16 @@ def _write_pidfile(inst_id: str, pid: int) -> None:
     (PID_DIR / f"{inst_id}.pid").write_text(str(pid))
 
 
-def launch_instance(inst: InstanceConfig) -> int:
-    """Spawn a vLLM instance in the background and record its pid.
+def _spawn_tracked(name: str, argv: list[str]) -> int:
+    """Spawn a background process, logging to logs/<name>.log with a pidfile.
 
-    Each launch truncates the instance's log so it starts fresh from the top:
-    old runs are not kept, keeping `logs/<id>.log` readable as the current run
-    only. Inspect a previous run before relaunching if you need its history.
+    Each launch truncates the log so it starts fresh from the top: old runs
+    are not kept, keeping `logs/<name>.log` readable as the current run only.
+    Inspect a previous run before relaunching if you need its history.
 
     Args:
-        inst: The instance to launch.
+        name: Tracking name; pidfile is .tunnel/<name>.pid.
+        argv: Command to run.
 
     Returns:
         The pid of the spawned process.
@@ -49,20 +51,53 @@ def launch_instance(inst: InstanceConfig) -> int:
     PID_DIR.mkdir(parents=True, exist_ok=True)
     LOG_DIR.mkdir(parents=True, exist_ok=True)
 
-    log_path = LOG_DIR / f"{inst.id}.log"
+    log_path = LOG_DIR / f"{name}.log"
     timestamp = datetime.now(timezone.utc).isoformat()
     with log_path.open("w") as logfile:
-        logfile.write(f"=== tunnel up {inst.id} @ {timestamp} ===\n")
+        logfile.write(f"=== launch {name} @ {timestamp} ===\n")
         logfile.flush()
         proc = subprocess.Popen(
-            [sys.executable, "-m", "tunnel.cli", "serve", inst.id],
+            argv,
             stdout=logfile,
             stderr=subprocess.STDOUT,
             start_new_session=True,
         )
 
-    _write_pidfile(inst.id, proc.pid)
+    _write_pidfile(name, proc.pid)
     return proc.pid
+
+
+def launch_instance(inst: InstanceConfig) -> int:
+    """Spawn a vLLM instance in the background and record its pid.
+
+    Args:
+        inst: The instance to launch.
+
+    Returns:
+        The pid of the spawned process.
+    """
+    return _spawn_tracked(
+        inst.id, [sys.executable, "-m", "tunnel.cli", "serve", inst.id]
+    )
+
+
+def lmcache_server_name(inst_id: str) -> str:
+    """Tracking name (pidfile/log stem) for an instance's LMCache server."""
+    return f"lmcache-{inst_id}"
+
+
+def launch_lmcache_server(inst: InstanceConfig) -> int:
+    """Spawn an instance's LMCache server (MP mode) in the background.
+
+    Args:
+        inst: The instance whose lmcache server to launch.
+
+    Returns:
+        The pid of the spawned process.
+    """
+    return _spawn_tracked(
+        lmcache_server_name(inst.id), build_lmcache_server_command(inst)
+    )
 
 
 def adopt_instance(inst_id: str, pid: int) -> None:

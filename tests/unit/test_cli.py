@@ -26,7 +26,8 @@ def _minimal_instance(**overrides) -> InstanceConfig:
 
 
 def test_base_command_for_minimal_instance():
-    # lmcache.enabled defaults to True, so the KV connector flag is present.
+    # lmcache.enabled defaults to True, so the KV connector flag is present;
+    # the MP connector points at the instance's lmcache server port (+1000).
     cmd = build_serve_command(_minimal_instance())
     assert cmd == [
         "vllm", "serve", "org/test-model",
@@ -37,19 +38,46 @@ def test_base_command_for_minimal_instance():
         "--dtype", "auto",
         "--default-chat-template-kwargs", '{"enable_thinking": false}',
         "--no-use-tqdm-on-load",
-        "--kv-transfer-config", '{"kv_connector": "LMCacheConnectorV1", "kv_role": "kv_both"}',
+        "--kv-transfer-config",
+        '{"kv_connector": "LMCacheMPConnector", "kv_role": "kv_both", '
+        '"kv_connector_extra_config": '
+        '{"lmcache.mp.host": "tcp://localhost", "lmcache.mp.port": 9000}}',
     ]
 
 
 def test_kv_transfer_config_present_when_lmcache_enabled():
     cmd = build_serve_command(_minimal_instance(lmcache={"enabled": True}))
     assert "--kv-transfer-config" in cmd
-    assert "LMCacheConnectorV1" in cmd[cmd.index("--kv-transfer-config") + 1]
+    assert "LMCacheMPConnector" in cmd[cmd.index("--kv-transfer-config") + 1]
 
 
 def test_kv_transfer_config_absent_when_lmcache_disabled():
     cmd = build_serve_command(_minimal_instance(lmcache={"enabled": False}))
     assert "--kv-transfer-config" not in cmd
+
+
+def test_kv_transfer_config_uses_explicit_lmcache_port():
+    cmd = build_serve_command(
+        _minimal_instance(lmcache={"enabled": True, "port": 6555})
+    )
+    assert '"lmcache.mp.port": 6555' in cmd[cmd.index("--kv-transfer-config") + 1]
+
+
+def test_mamba_align_emits_hybrid_flags():
+    cmd = build_serve_command(
+        _minimal_instance(lmcache={"enabled": True, "mamba_align": True,
+                                   "chunk_size": 544})
+    )
+    assert "--enable-prefix-caching" in cmd
+    assert cmd[cmd.index("--mamba-cache-mode") + 1] == "align"
+    # 2N-1 keeps scheduler throughput while matching the unified block size N.
+    assert cmd[cmd.index("--max-num-batched-tokens") + 1] == "1087"
+
+
+def test_no_mamba_flags_without_mamba_align():
+    cmd = build_serve_command(_minimal_instance())
+    assert "--mamba-cache-mode" not in cmd
+    assert "--max-num-batched-tokens" not in cmd
 
 
 def test_quantization_flag_present_when_set():

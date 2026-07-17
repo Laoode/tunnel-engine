@@ -266,11 +266,32 @@ def test_local_can_fall_back_to_remote_model():
     assert reg.instances[0].fallbacks == ["deepseek-v4-pro"]
 
 
-def test_invalid_remote_serde_rejected():
-    with pytest.raises(Exception, match="remote_serde"):
+def test_invalid_eviction_policy_rejected():
+    with pytest.raises(Exception, match="eviction_policy"):
         load_registry(_write(_minimal_registry(
             {**_minimal_instance(),
-             "lmcache": {"enabled": True, "backend": "redis", "remote_serde": "zstd"}}
+             "lmcache": {"enabled": True, "eviction_policy": "FIFO"}}
+        )))
+
+
+def test_lmcache_port_defaults_to_instance_port_plus_1000():
+    reg = load_registry(_write(_minimal_registry(_minimal_instance(port=8000))))
+    assert reg.instances[0].lmcache.port == 9000
+
+
+def test_lmcache_port_not_derived_when_disabled():
+    reg = load_registry(_write(_minimal_registry(
+        {**_minimal_instance(), "lmcache": {"enabled": False}}
+    )))
+    assert reg.instances[0].lmcache.port is None
+
+
+def test_lmcache_port_collision_with_instance_port_rejected():
+    # Instance at 9000 collides with the lmcache server derived for 8000.
+    with pytest.raises(Exception, match="[Dd]uplicate ports"):
+        load_registry(_write(_minimal_registry(
+            _minimal_instance(id="a", port=8000),
+            _minimal_instance(id="b", port=9000),
         )))
 
 

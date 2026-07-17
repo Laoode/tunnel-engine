@@ -154,7 +154,7 @@ def test_launch_instance_writes_pidfile_and_log(monkeypatch):
 
     log_path = LOG_DIR / "test-model.log"
     contents = log_path.read_text()
-    assert "=== tunnel up test-model @" in contents
+    assert "=== launch test-model @" in contents
     assert "child output" in contents
 
 

@@ -1,68 +1,63 @@
-"""Generates per-instance LMCache config files under configs/lmcache/.
+"""Builds the `lmcache server` command for an instance (MP architecture).
 
-LMCache activates via the LMCACHE_CONFIG_FILE env var, set by tunnel/cli.py.
+Each instance with lmcache.enabled runs its own LMCache server process (ZMQ);
+vLLM reaches it through the LMCacheMPConnector with lmcache.mp.port pointing
+at inst.lmcache.port. The server owns all cache tiers: L1 is CPU RAM, and the
+"disk" / "redis" backends add an L2 adapter. See docs/lmcache.md.
 """
 from __future__ import annotations
 
-from pathlib import Path
+import json
+import os
 
-import yaml
+from tunnel.registry import InstanceConfig
 
-from tunnel.registry import InstanceConfig, TunnelRegistry
-
-_AUTO_HEADER_TPL = (
-    "# AUTO-GENERATED for instance: {instance_id}\n"
-    "# Source : configs/models.yaml  |  Regenerate: make generate\n\n"
-)
+LMCACHE_DISK_ROOT = "/tmp/lmcache"
 
 
-def build_lmcache_config(inst: InstanceConfig) -> dict:
-    """Pure function: InstanceConfig -> LMCache config dict.
-
-    Emits LMCache's flat config schema (v0.4.x): local_cpu is a bool with a
-    sibling max_local_cpu_size (GB), local_disk is a path string with a sibling
-    max_local_disk_size, and remote_url/remote_serde drive the remote backend.
+def build_lmcache_server_command(
+    inst: InstanceConfig, env: dict | None = None
+) -> list[str]:
+    """Pure function: InstanceConfig -> `lmcache server` argv.
 
     Backend tiers:
-      - cpu:   CPU RAM only.
-      - disk:  local disk only.
-      - redis: CPU RAM (L1) + Redis (L2). The remote_url is injected at serve
-               time from the environment (LMCACHE_REMOTE_URL), since the Redis
-               host/port are environment-specific and must never be committed.
+      - cpu:   L1 CPU RAM only.
+      - disk:  L1 + filesystem L2 adapter under /tmp/lmcache/<id>.
+      - redis: L1 + RESP L2 adapter. Host/port come from LMCACHE_REDIS_HOST /
+               LMCACHE_REDIS_PORT in `env` (environment-specific, never
+               committed); silently degrades to L1-only when the host is
+               unset — the caller warns.
+
+    Args:
+        inst: Validated InstanceConfig with lmcache.enabled.
+        env: Environment mapping for redis host/port lookup. Defaults to
+            os.environ.
+
+    Returns:
+        Full argv list for the LMCache server process.
     """
+    if env is None:
+        env = dict(os.environ)
     cfg = inst.lmcache
-    size_gb = float(cfg.max_cache_size_gb)
-    config: dict = {
-        "chunk_size": cfg.chunk_size,
-        "local_cpu": cfg.backend in ("cpu", "redis"),
-        "max_local_cpu_size": size_gb,
-    }
+    cmd = [
+        "lmcache", "server",
+        "--instance-id", inst.id,
+        "--port",        str(cfg.port),
+        # The HTTP frontend always binds; the default :8080 would collide
+        # across servers, so it gets a derived unique port on localhost.
+        "--http-host",   "127.0.0.1",
+        "--http-port",   str(cfg.port + 1000),
+        "--chunk-size",  str(cfg.chunk_size),
+        "--l1-size-gb",  str(cfg.max_cache_size_gb),
+        "--eviction-policy", cfg.eviction_policy,
+    ]
     if cfg.backend == "disk":
-        config["local_disk"] = f"/tmp/lmcache/{inst.id}"
-        config["max_local_disk_size"] = size_gb
+        cmd += ["--l2-adapter",
+                json.dumps({"type": "fs", "path": f"{LMCACHE_DISK_ROOT}/{inst.id}"})]
     if cfg.backend == "redis":
-        config["remote_serde"] = cfg.remote_serde
-        # remote_url is set via LMCACHE_REMOTE_URL at serve time (see tunnel/cli.py).
-    return config
-
-
-def write_lmcache_configs(
-    registry: TunnelRegistry,
-    output_dir: Path | str = "configs/lmcache",
-) -> list[Path]:
-    out_dir = Path(output_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
-    written: list[Path] = []
-
-    for inst in registry.instances:
-        if not inst.lmcache.enabled:
-            continue
-        config = build_lmcache_config(inst)
-        path = out_dir / f"{inst.id}.yaml"
-        path.write_text(
-            _AUTO_HEADER_TPL.format(instance_id=inst.id)
-            + yaml.dump(config, default_flow_style=False)
-        )
-        written.append(path)
-
-    return written
+        host = env.get("LMCACHE_REDIS_HOST")
+        if host:
+            port = int(env.get("LMCACHE_REDIS_PORT", "6379"))
+            cmd += ["--l2-adapter",
+                    json.dumps({"type": "resp", "host": host, "port": port})]
+    return cmd
