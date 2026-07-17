@@ -4,4 +4,6 @@ pytest-asyncio>=0.23
 pytest-httpx>=0.30
 ruff>=0.4               # linter + formatter
 mypy>=1.10
-matplotlib>=3.8       # loadgen analysis plots
+matplotlib>=3.10      # loadgen analysis plots (needs numpy 2 support; lmcache 0.5 pulls numpy>=2)
+aiperf>=0.5           # performbench profiling engine (tests/services/performbench)
+openai>=1.60          # performbench async client (long_doc_qa, ttft sweep)
