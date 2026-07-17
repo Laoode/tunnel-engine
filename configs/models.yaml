@@ -18,10 +18,15 @@ defaults:
   lora:
     enabled: false
     modules: []
+  # Each enabled instance runs its own `lmcache server` (MP mode) on
+  # port = instance port + 1000 (override with lmcache.port). vLLM connects
+  # via LMCacheMPConnector, which also supports hybrid-attention models
+  # (Qwen3.5 Mamba+Full, Gemma 4 SWA+Full). See docs/lmcache.md.
+  # max_cache_size_gb is CPU RAM (L1) per instance; host has ~21GB free.
   lmcache:
     enabled: true
     backend: cpu
-    max_cache_size_gb: 20
+    max_cache_size_gb: 8
     chunk_size: 256
   extra_args: []
 
@@ -40,13 +45,18 @@ instances:
     tool_parser: qwen3_xml
     reasoning_parser: qwen3
     lmcache:
-      enabled: false  # Qwen3.5 is a hybrid-attention model; the LMCache KV connector
-                      # forces vLLM's hybrid KV manager off and the engine fails to start.
-                      # Hybrid models use vLLM's native prefix cache instead.
+      enabled: true
+      # Mamba-hybrid (GDN + Full attention): LMCacheMPConnector handles the
+      # hybrid KV groups; mamba_align emits --mamba-cache-mode align,
+      # --enable-prefix-caching and --max-num-batched-tokens 2N-1.
+      # chunk_size MUST equal the unified attention block size N that vLLM
+      # prints at startup ("Setting attention block size to N tokens").
+      mamba_align: true
+      chunk_size: 544
     cost:             # synthetic amortized GPU rate (USD per 1M tokens) for spend tracking
       input_per_mtok: 0.05
       output_per_mtok: 0.20
-    description: "Qwen 0.8B – Tool-calling bench model (hybrid attn; LMCache off)"
+    description: "Qwen 0.8B – Tool-calling bench model (hybrid attn via LMCache MP)"
 
   - id: minicpm-1b
     model: openbmb/MiniCPM5-1B
@@ -85,9 +95,10 @@ instances:
   #   max_model_len: 4096
   #   attention_backend: FLASHINFER
   #   lmcache:
-  #     enabled: false  # Qwen3.5 hybrid attention breaks the LMCache connector (same as qwen-0.8b)
+  #     enabled: true
+  #     mamba_align: true
+  #     chunk_size: 544   # verify N from vLLM startup log for the 4B variant
   #   extra_args: ["--trust-remote-code", "--enable-chunked-prefill",
-  #                "--enable-prefix-caching", "--max-num-batched-tokens", "4096",
   #                "--max-num-seqs", "4"]
   #   cost:             # synthetic amortized GPU rate (USD per 1M tokens) for spend tracking
   #     input_per_mtok: 0.05
@@ -95,6 +106,14 @@ instances:
   #   description: "Qwen 3.5 4B – streamed from S3 object storage, no local disk"
 
   # Add more instances below. Examples:
+  #
+  # Gemma 4 (sliding-window + full attention hybrid): supported by the
+  # LMCache MP connector out of the box -- no mamba_align, default chunk_size:
+  # - id: gemma-4-e2b
+  #   model: google/gemma-4-E2B-it
+  #   port: 8004
+  #   gpu_memory_utilization: 0.45
+  #   description: "Gemma 4 E2B – hybrid SWA, KV cache via LMCache MP"
   #
   # Standard model:
   # - id: llama-3b

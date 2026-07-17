@@ -15,6 +15,10 @@ defaults:
   lora:
     enabled: false
     modules: []
+  # Per-instance `lmcache server` (MP mode) on instance port + 1000; see
+  # configs/models.yaml + docs/lmcache.md. max_cache_size_gb is CPU RAM (L1)
+  # per instance: 7 instances x 20 GB = 140 GB -- confirm the prod box has
+  # the headroom before first boot, or lower this default.
   lmcache:
     enabled: true
     backend: cpu
@@ -39,6 +43,9 @@ instances:
     chat_template: configs/templates/qwen3.5-enhanced.jinja
     tool_parser: qwen3_xml
     reasoning_parser: qwen3
+    lmcache:
+      mamba_align: true   # Mamba hybrid: see configs/models.yaml qwen-0.8b notes
+      chunk_size: 544     # unified attention block size N (vLLM startup log)
     description: "Qwen3.5 0.8B – Tool-calling bench model"
 
   - id: qwen3.5-2b
@@ -49,6 +56,9 @@ instances:
     chat_template: configs/templates/qwen3.5-enhanced.jinja
     tool_parser: qwen3_xml
     reasoning_parser: qwen3
+    lmcache:
+      mamba_align: true
+      chunk_size: 544     # PLACEHOLDER: verify N in this variant's startup log
     description: "Qwen3.5 2B – Tool-calling bench model"
 
   - id: qwen3.5-4b
@@ -59,6 +69,9 @@ instances:
     chat_template: configs/templates/qwen3.5-enhanced.jinja
     tool_parser: qwen3_xml
     reasoning_parser: qwen3
+    lmcache:
+      mamba_align: true
+      chunk_size: 544     # PLACEHOLDER: verify N in this variant's startup log
     description: "Qwen3.5 4B – Tool-calling bench model"
 
   - id: gemma-4-e2b
@@ -84,6 +97,10 @@ instances:
     attention_backend: FLASHINFER
     tool_parser: lfm2
     reasoning_parser: qwen3
+    lmcache:
+      enabled: false  # LFM2.5 conv+attention hybrid is NOT in LMCache's
+                      # validated architecture list (docs/lmcache.md);
+                      # verify on a dev box before enabling.
     description: "LFM2.5 8B-A1B – Tool-calling bench model"
 
   - id: minicpm5-1b
