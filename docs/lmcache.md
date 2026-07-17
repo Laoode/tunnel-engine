@@ -1,128 +1,453 @@
-# LMCache KV-Cache Offload
+## Hybrid Attention Models
 
-Maintenance reference for the LMCache integration: what it does, how it is wired
-into vLLM, how to configure each backend, which models it works with, and how to
-benchmark it. LMCache stores the transformer KV cache in tiers below GPU HBM
-(CPU RAM, local disk, or Redis) so a repeated prompt prefix is *loaded* instead
-of *recomputed*, cutting time-to-first-token (TTFT) and freeing GPU compute.
+LMCache supports hybrid-attention architectures through `LMCacheMPConnector`.
 
-## How it is wired
+Supported architectures include:
 
-Two things must both be true for LMCache to actually run (either alone is a
-silent no-op):
+| Model | Attention |
+|--------|-----------|
+| Gemma 3 / 4 | Sliding Window + Full |
+| GPT-OSS | Sliding Window + Full |
+| Qwen3.5 / Qwen3.6 | Mamba (GDN) + Full |
+| DeepSeek-V4 Flash | Sparse MLA |
+| GLM 5.1 / 5.2 | Dynamic Sparse |
+| MiniMax M3 | Sparse + Lightning Indexer |
 
-1. **Config file** — `make generate` writes `configs/lmcache/<id>.yaml` per
-   LMCache-enabled instance (from `build_lmcache_config` in
-   `tunnel/cache/lmcache_config.py`). `cmd_serve` sets
-   `LMCACHE_CONFIG_FILE=configs/lmcache/<id>.yaml` before launching vLLM.
-2. **KV connector** — `build_serve_command` passes
-   `--kv-transfer-config '{"kv_connector":"LMCacheConnectorV1","kv_role":"kv_both"}'`
-   whenever `lmcache.enabled`. Without this flag vLLM ignores the config file and
-   only its in-GPU prefix cache runs.
+LMCache automatically detects every KV cache group and manages them independently. No additional hybrid-specific flags are required.
 
-Enabling the connector turns **off** vLLM's own hybrid KV manager and native
-prefix cache; LMCache becomes the sole KV-reuse layer (GPU HBM is L0, then the
-LMCache tiers). LMCache keys are prefixed with `model_name`, so multiple models
-(or replicas of one model) can safely share one remote store without collisions.
+---
 
-## Registry configuration
+## Object Group Separation
 
-Per instance, under `lmcache:` (merged from `defaults:` in `configs/models.yaml`):
+LMCache separates cache objects by attention type.
 
-```yaml
-lmcache:
-  enabled: true          # false => no LMCache, no connector flag
-  backend: cpu           # cpu | disk | redis
-  max_cache_size_gb: 20  # size of the tier (CPU RAM or disk)
-  chunk_size: 256         # KV chunk granularity (tokens)
-  remote_serde: naive    # naive | cachegen  (redis backend only)
-```
-
-Generated flat LMCache config (`configs/lmcache/<id>.yaml`) per backend:
-
-| backend | emitted keys |
-|---|---|
-| `cpu` | `local_cpu: true`, `max_local_cpu_size: <gb>` |
-| `disk` | `local_cpu: false`, `local_disk: /tmp/lmcache/<id>`, `max_local_disk_size: <gb>` |
-| `redis` | `local_cpu: true` (L1) + `remote_serde`; `remote_url` injected at serve time |
-
-### Redis backend
-
-The Redis host/port are environment-specific, so they are never committed. Set
-them in `.env`; `cmd_serve` assembles `redis://host:port` and exports it as
-`LMCACHE_REMOTE_URL` (LMCache merges env over the config file):
-
-```
-LMCACHE_REDIS_HOST=localhost
-LMCACHE_REDIS_PORT=6379
-LMCACHE_REMOTE_SERDE=naive
-```
-
-URL scheme is `redis://` (also `rediss://`, `redis-sentinel://`). If
-`LMCACHE_REDIS_HOST` is unset, the instance warns and degrades to the local CPU
-tier. Redis gives KV *persistence* across restarts and spillover beyond host RAM;
-same-model replica sharing is the natural extension.
-
-## Model compatibility (important)
-
-LMCache's connector requires a single unified KV cache type, so it is
-**incompatible with hybrid-attention / SSM models**. Qwen3.5
-(`Qwen3_5ForConditionalGeneration`, gated delta-net / linear attention) fails at
-startup with:
-
-```
-ValueError: Hybrid KV cache manager is disabled but failed to convert the KV
-cache specs to one unified type.
-```
-
-Set `lmcache.enabled: false` for such models (they fall back to vLLM's native
-prefix cache, which yields ~0% hit rate on hybrid layers anyway). Standard dense
-transformers (e.g. MiniCPM5-1B) work.
-
-| Model | Works with LMCache? |
-|---|---|
-| MiniCPM5-1B (dense) | yes |
-| Qwen3.5 family (hybrid GDN) | no — set `lmcache.enabled: false` |
-
-## Verifying it works
-
-Watch the vLLM instance log for LMCache init and per-request hit stats:
-
-```
-Created backend: LocalCPUBackend
-Reqid: ..., Total tokens 5045, ... LMCache hit tokens: 4864, need to load: 0
-```
-
-`LMCache hit tokens` on the warm request is the direct proof of KV reuse.
-
-## Benchmark
-
-Reusable benchmark: `tests/services/kv_cache/main.py` (dataset in
-`dataset.py`). It sends N unique long-prefix prompts twice (cold then warm) at
-every registered target and reports the TTFT collapse. Results are written to
-`tests/services/kv_cache/RESULTS.md`.
+Default:
 
 ```bash
-make up                                   # bring the fleet up
-make bench-cache                          # or: python tests/services/kv_cache/main.py
-python tests/services/kv_cache/main.py minicpm-1b        # specific ids
-N_PARAS=85 N_PROMPTS=10 make bench-cache                 # bigger prefix => bigger win
+lmcache server \
+    --chunk-size 256 \
+    --l1-size-gb 100
 ```
 
-Targets are registry-driven: every local instance, plus any `remote_models`
-entry whose `api_key_env` is set (so DeepSeek's server-side cache is compared
-too). The prefix length auto-caps via graceful skip if a model's chat template
-pushes a prompt past its context window (lower `N_PARAS` and re-run).
+Disable separation:
 
-### Observed on L4 24GB (2026-07-11)
+```bash
+lmcache server \
+    --chunk-size 256 \
+    --l1-size-gb 100 \
+    --no-separate-object-groups
+```
 
-KV-reuse speedup scales with prefix length; measured cold-vs-warm TTFT:
+This only changes storage layout. Cache correctness is unaffected.
 
-| Model | Backend | ~5k-tok | ~8.5k-tok | ~9.2k-tok |
-|---|---|---|---|---|
-| minicpm-1b | LMCache CPU | 3.9x | 5.8x | 8.6x |
-| qwen-0.8b | hybrid, LMCache off | ~1x (0% hit) | — | — |
-| deepseek-v4-flash | remote | ~1x TTFT, 98% prompt tokens server-cached | | |
+---
 
-LMCache logs confirmed 4864/5045 (96%) of the prefix KV served from cache on
-warm requests. See `tests/services/kv_cache/RESULTS.md` for the latest run.
+## Qwen3.5 / Qwen3.6 (Mamba Hybrid)
+
+Validated:
+
+- Qwen/Qwen3.5-0.8B
+- Qwen/Qwen3.6-27B
+
+Architecture:
+
+```
+Full Attention
+       │
+       ▼
+Mamba / Gated DeltaNet
+       │
+       ▼
+Full Attention
+       │
+       ▼
+Mamba / Gated DeltaNet
+```
+
+LMCache transparently converts Mamba recurrent states into cacheable pages, enabling prefix caching without model-specific code.
+
+---
+
+## Find the Unified Block Size
+
+Each model has a unified attention block size **N**.
+
+vLLM prints it during startup:
+
+```text
+INFO Setting attention block size to 544 tokens...
+```
+
+Example:
+
+```bash
+vllm serve Qwen/Qwen3.5-4B \
+    --enable-prefix-caching \
+    --mamba-cache-mode align
+```
+
+Typical values:
+
+| Model | Block Size |
+|--------|-----------:|
+| Qwen3.5-0.8B | 544 |
+| Qwen3.6-27B | 784 |
+
+---
+
+## Required Configuration
+
+LMCache:
+
+```bash
+lmcache server \
+    --chunk-size N \
+    --l1-size-gb 100
+```
+
+vLLM:
+
+```bash
+vllm serve <model> \
+    --enable-prefix-caching \
+    --mamba-cache-mode align \
+    --max-num-batched-tokens $((2*N-1)) \
+    --kv-transfer-config \
+    '{"kv_connector":"LMCacheMPConnector","kv_role":"kv_both"}'
+```
+
+Rules:
+
+- `--chunk-size = N`
+- `--max-num-batched-tokens = 2N-1` (recommended)
+- `--mamba-cache-mode align` is required.
+
+Using `N` also works but reduces scheduler throughput under concurrent requests.
+
+---
+
+## Caveats
+
+- Generation is not bit-identical between cached and uncached runs.
+- Compare evaluation metrics instead of generated tokens.
+- Cache entries cannot be shared across different attention backends.
+- Image/video KV caching is not validated.
+- Mamba prefix caching is still experimental in vLLM.
+
+---
+
+## Gemma 4
+
+Validated:
+
+- google/gemma-4-31B-it
+- google/gemma-4-12B-it
+- google/gemma-4-E4B-it
+
+Architecture:
+
+```
+Sliding Window
+       │
+       ▼
+Full Attention
+       │
+       ▼
+Sliding Window
+```
+
+Gemma 4 is supported out of the box.
+
+Start LMCache:
+
+```bash
+lmcache server \
+    --l1-size-gb 100
+```
+
+Single GPU:
+
+```bash
+vllm serve google/gemma-4-12B-it \
+    --kv-transfer-config \
+    '{"kv_connector":"LMCacheMPConnector","kv_role":"kv_both"}'
+```
+
+Multi GPU:
+
+```bash
+vllm serve google/gemma-4-31B-it \
+    --tensor-parallel-size 2 \
+    --kv-transfer-config \
+    '{"kv_connector":"LMCacheMPConnector","kv_role":"kv_both"}'
+```
+
+Adjust `--tensor-parallel-size` for your hardware.
+
+---
+
+## Gemma 4 Notes
+
+- Hybrid KV cache with heterogeneous block sizes is fully supported.
+- LMCache automatically handles different block sizes for sliding-window and full-attention groups.
+- Cross-layer KV sharing is preserved automatically.
+- No additional configuration is required.
+- CacheGen compression has not been validated.
+
+---
+
+## Verification
+
+To verify KV reuse:
+
+1. Run an evaluation to populate LMCache.
+2. Clear only vLLM's local prefix cache.
+
+```bash
+curl -X POST http://localhost:8000/reset_prefix_cache
+```
+
+3. Run the evaluation again.
+
+Expected behavior:
+
+```
+vLLM Local Cache  -> MISS
+LMCache           -> HIT
+Evaluation Score  -> Same
+```
+
+## Uniform Attention Models
+
+Unlike hybrid architectures, these models use a single attention mechanism across every layer. No unified block-size tuning or hybrid KV management is required.
+
+LMCache works out of the box.
+
+---
+
+## Qwen3 MoE
+
+Validated:
+
+- Qwen/Qwen3-235B-A22B
+- Qwen/Qwen3-30B-A3B
+- Qwen/Qwen3-Coder-480B-A35B-Instruct-FP8
+- Qwen/Qwen3-Coder-30B-A3B-Instruct
+
+Architecture:
+
+```
+Attention
+   │
+   ▼
+MoE
+   │
+   ▼
+Attention
+   │
+   ▼
+MoE
+```
+
+Start LMCache:
+
+```bash
+lmcache server \
+    --l1-size-gb 100 \
+    --eviction-policy LRU
+```
+
+### Single GPU
+
+```bash
+vllm serve Qwen/Qwen3-30B-A3B \
+    --enable-auto-tool-choice \
+    --tool-call-parser hermes \
+    --reasoning-parser qwen3 \
+    --kv-transfer-config \
+    '{"kv_connector":"LMCacheMPConnector","kv_role":"kv_both"}'
+```
+
+### Multi GPU (Expert Parallel)
+
+```bash
+vllm serve Qwen/Qwen3-235B-A22B \
+    --tensor-parallel-size 4 \
+    --enable-expert-parallel \
+    --enable-auto-tool-choice \
+    --tool-call-parser hermes \
+    --reasoning-parser qwen3 \
+    --kv-transfer-config \
+    '{"kv_connector":"LMCacheMPConnector","kv_role":"kv_both"}'
+```
+
+Qwen3-Coder models use the `qwen3_coder` parser.
+
+Adjust `--tensor-parallel-size` to match your hardware.
+
+No hybrid-specific configuration is required.
+
+---
+
+## KV Cache SDK
+
+LMCache SDK provides direct programmatic access to KV cache objects.
+
+Instead of only reading cached KV, you can retrieve it, modify it on CPU, and write it back before decoding resumes.
+
+Typical use cases:
+
+- Token Dropping
+- KV Compression
+- KV Pruning
+- Custom KV Transformations
+- Research experiments
+
+---
+
+## Pipeline
+
+```
+Prompt
+   │
+   ▼
+Prefill (vLLM)
+   │
+   ▼
+LMCache
+   │
+   ▼
+CPU KV Editor
+   │
+   ▼
+Modified KV
+   │
+   ▼
+Decode
+```
+
+Workflow:
+
+1. Prefill prompt.
+2. Store KV into LMCache.
+3. Retrieve KV to CPU.
+4. Apply custom edit function.
+5. Store modified KV.
+6. Continue decoding.
+
+---
+
+## Start LMCache
+
+Enable shared-memory transfer.
+
+```bash
+lmcache server \
+    --l1-size-gb 150 \
+    --chunk-size 256 \
+    --eviction-policy LRU \
+    --port 6555 \
+    --http-port 8080 \
+    --shm-name lmcache_kvcache_sdk \
+    --no-l1-use-lazy
+```
+
+---
+
+## Start vLLM
+
+```bash
+vllm serve Qwen/Qwen3-8B \
+    --port 8000 \
+    --enforce-eager \
+    --gpu-memory-utilization 0.65 \
+    --return-tokens-as-token-ids \
+    --kv-transfer-config '{
+        "kv_connector":"LMCacheMPConnector",
+        "kv_role":"kv_both",
+        "kv_connector_extra_config":{
+            "lmcache.mp.port":6555
+        }
+    }'
+```
+
+---
+
+## Python SDK
+
+```python
+import lmcache.sdk.kvcache as lmc_sdk
+
+ctx = lmc_sdk.connect(
+    url="tcp://localhost:6555",
+    http_url="http://localhost:8080",
+    model_name="Qwen/Qwen3-8B",
+)
+
+...
+
+lmc_sdk.close(ctx)
+```
+
+---
+
+## Custom KV Editing
+
+Your edit function receives:
+
+- KV tensor
+- Token IDs
+
+Returns:
+
+- Modified KV
+- Modified Token IDs
+
+```
+LMCache
+    │
+    ▼
+Edit Function
+    │
+    ├── Drop Tokens
+    ├── Compress KV
+    ├── Prune Layers
+    └── Custom Logic
+    │
+    ▼
+Store Back
+```
+
+The SDK automatically processes every request in the batch.
+
+---
+
+## SDK APIs
+
+| API | Description |
+|------|-------------|
+| `connect()` | Create SDK context |
+| `close()` | Release resources |
+| `create_request()` | Create request stream |
+| `LMCacheBatchedStream()` | Create batch |
+| `batch.add()` | Add request |
+| `batch.prefill()` | Generate KV cache |
+| `batch.modify()` | Edit KV cache |
+| `batch.decode()` | Continue generation |
+
+Metrics returned include:
+
+- Prefill throughput
+- Decode throughput
+- Input tokens
+- Output tokens
+- Modify latency
+
+---
+
+## Notes
+
+- KV tensors are edited entirely on CPU.
+- Shared memory is recommended for maximum throughput.
+- Token IDs are required to correctly identify cached KV entries.
+- The SDK is intended for advanced KV cache research and optimization.

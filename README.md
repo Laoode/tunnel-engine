@@ -136,7 +136,7 @@ Secrets live only in `.env`. They are never written into any file under `configs
 
 ```bash
 make check       # validate the registry: YAML parses + GPU budget not exceeded (writes nothing)
-make generate    # rebuild derived configs (configs/litellm/ + configs/lmcache/ + configs/prometheus/)
+make generate    # rebuild derived configs (configs/litellm/ + configs/prometheus/)
 make list        # show registered instances, their ports, and the proxy port
 ```
 
@@ -205,8 +205,8 @@ the surviving models too).
 ## Golden rules (avoid conflicts)
 
 1. **Edit only `configs/models.yaml`, then `make generate`.** Never hand-edit files
-   under `configs/litellm/` or `configs/lmcache/` - they are auto-generated and get
-   overwritten.
+   under `configs/litellm/` or `configs/prometheus/` - they are auto-generated and
+   get overwritten.
 2. **Always `make down` before swapping models or re-running.** A leftover vLLM keeps
    the GPU memory and the port bound; the next launch will fail with an out-of-memory
    or port-in-use error. When unsure, confirm the GPU is clear with `nvidia-smi`
@@ -224,7 +224,7 @@ the surviving models too).
 | --- | --- |
 | `make install` | Install all dependencies |
 | `make check` | Validate the registry without writing anything |
-| `make generate` | Rebuild derived LiteLLM + LMCache + Prometheus configs |
+| `make generate` | Rebuild derived LiteLLM + Prometheus configs |
 | `make list` | List registered instances and ports |
 | `make serve ID=<id>` | Launch one instance in the foreground |
 | `make up` | Launch the whole fleet in the background + proxy |

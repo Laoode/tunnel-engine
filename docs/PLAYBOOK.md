@@ -5,7 +5,7 @@
 > behavior described here must update, add, or delete the matching section in the same
 > change. When this file and the code disagree, the code wins; fix the playbook.
 >
-> Last verified against the code: 2026-07-16 (S3 streaming, uncommitted).
+> Last verified against the code: 2026-07-17 (LMCache MP + performbench, uncommitted).
 
 ## What this engine is, in one paragraph
 
@@ -27,7 +27,7 @@ configs/models.yaml  ──make generate──▶  derived configs  ──make u
 - `configs/models.yaml` is the **only** file you edit to change models, tiers,
   services, costs, or scheduling. (`configs/models-prod.yaml` is the prod variant,
   selected with `REGISTRY=configs/models-prod.yaml make <target>`.)
-- `make generate` rebuilds `configs/litellm/`, `configs/lmcache/`, and
+- `make generate` rebuilds `configs/litellm/` and
   `configs/prometheus/`. These are build artifacts. Editing them by hand is the #1
   way to lose work, because the next `generate` overwrites them.
 - `make check` validates the registry without writing anything. Run it after every
@@ -40,8 +40,9 @@ configs/models.yaml  ──make generate──▶  derived configs  ──make u
 |---|---|---|---|
 | LiteLLM proxy (the gateway) | 4000 | `make up` or `make start` | OpenAI-compatible; all clients call this |
 | vLLM instances | 8000, 8001, ... | `make up` or `make serve ID=` | one process per registry instance |
+| LMCache servers | 9000, 9001, ... (= inst. port + 1000) | auto by `serve`/`up` per `lmcache.enabled` instance | KV cache tiers (MP mode); survives `make stop ID=`, cleaned by `make down` |
 | XGuard classifier | 8002 | `make up` or `make serve ID=xguard-0.6b` | `internal:` instance; content safety, not client-routable |
-| Postgres (keys, spend logs) | 5433 | `make db-up` | Docker, data in `/teamspace/.../.tunnel-pg` |
+| Postgres (keys, spend logs) | 5433 | `make db-up` (auto via `up`/`start` when the container is down) | Docker, data in `/teamspace/.../.tunnel-pg` |
 | Prometheus | 9092 | `make obs-up` | 9090/9091 are taken by Lightning infra |
 | Grafana | 3000 | `make obs-up` | admin/admin, dashboard auto-provisioned |
 
@@ -57,11 +58,13 @@ configs/models.yaml  ──make generate──▶  derived configs  ──make u
 | `tunnel/gateway/keys.py` | declarative virtual-key sync against the LiteLLM DB |
 | `tunnel/gateway/tier_hook.py` | LiteLLM pre-call hook: key tier -> vLLM request priority |
 | `tunnel/gateway/guard_hook.py` | LiteLLM pre/post-call hook: XGuard content safety (calls :8002 directly) |
+| `tunnel/cache/lmcache_config.py` | registry -> `lmcache server` argv (MP mode) |
 | `tunnel/observability/prometheus_config.py` | registry -> Prometheus scrape config |
 | `tunnel/health/checker.py` | instance health polling used by the `up`/`start` gate |
-| `tests/unit/` | 188 fast tests, no GPU (`make test-unit`) |
+| `tests/unit/` | 193 fast tests, no GPU (`make test-unit`) |
 | `tests/services/loadgen/` | load generator + analysis plots (`make loadtest`) |
 | `tests/services/guardbench/` | guardrail eval: DeepSeek gen -> Sonnet judge -> latency/accuracy bench |
+| `tests/services/performbench/` | unified perf bench: `make perf` gated suite + scenario catalog |
 | `.tunnel/keys.env` | the ONLY copy of virtual-key secrets (0600, gitignored) |
 | `MEMORY.md` | AI session brain: current state, decisions, lessons |
 | `docs/PLAN.md` | roadmap and phase history (gitignored working doc) |
@@ -74,8 +77,8 @@ cp .env.example .env          # then set HF_TOKEN, LITELLM_MASTER_KEY,
                               # PG_PASSWORD, DATABASE_URL (see .env.example comments)
 make check                    # registry parses, GPU budget ok
 make generate                 # rebuild derived configs
-make db-up                    # Postgres for keys/spend (Docker)
-make up                       # launch all vLLM instances + proxy; first cold model
+make up                       # starts Postgres if needed, then all vLLM instances
+                              # (+ their lmcache servers) + proxy; first cold model
                               # load can take 10+ min on slow filesystems
 make keys-sync                # create/reconcile one virtual key per service
 make keys-list                # verify: alias, tier, models, spend per service
@@ -172,6 +175,13 @@ up). Sweep the block cutoff with `THRESHOLD=0.3 make guard-bench`; results land 
 still advertises it until you remove its registry block, `make generate`, and restart
 the proxy in a maintenance window.
 
+**Run the performance gate (required for serving-path changes):** `make perf` with
+the fleet up runs the gated suite (smoke aiperf profile + kv-longdoc TTFT-gain
+gate); nonzero exit = do not ship. `make perf-list` shows the catalog;
+`make perf SCENARIOS="goodput mixed"` picks scenarios. Artifacts under
+`tests/services/performbench/results/<ts>/`, summary in its `RESULTS.md`.
+Results recap + method: `docs/performance-kv-cache.md`.
+
 **Prod rollout:** same commands with `REGISTRY=configs/models-prod.yaml`. Fix the
 placeholder DeepSeek prices first.
 
@@ -180,17 +190,21 @@ placeholder DeepSeek prices first.
 These are environment facts, not opinions. More detail in `MEMORY.md` Lessons.
 
 1. **Lightning `/teamspace` drops empty directories on studio restart.** Postgres
-   then refuses to boot (missing `pg_notify` etc.). `make db-up` self-heals this;
-   just rerun it. Docker images/containers are also wiped on restart; bind-mounted
-   data survives.
+   then refuses to boot (missing `pg_notify` etc.). `make db-up` self-heals this,
+   and `make up`/`start` now auto-run it when the tunnel-pg container is down.
+   Docker images/containers are wiped on restart; bind-mounted data survives.
 2. **Cold model loads are slow** (5-15 min on the Lightning filesystem). If `make up`
    times out at the health gate, the instances usually keep loading; run `make start`
    once `make health` goes green instead of relaunching.
-3. **Never hand-edit `configs/litellm|lmcache|prometheus`** - regenerated on every
-   `make generate`.
+3. **Never hand-edit `configs/litellm|prometheus`** - regenerated on every
+   `make generate`. (LMCache no longer uses config files: each instance's
+   `lmcache server` is launched with argv built from the registry.)
 4. **A leftover vLLM process holds GPU memory and its port.** `make down` before
    swapping models; verify with `nvidia-smi` (0 MiB used). `make kill` is the nuclear
-   option (kills every GPU compute process on the box).
+   option (kills every GPU compute process on the box). Related: after
+   `make stop ID=`, wait for `nvidia-smi` to show the memory freed before
+   relaunching - a killed EngineCore takes seconds to release VRAM and an
+   instant relaunch fails at GPU profiling.
 5. **Secrets:** everything lives in `.env` (gitignored) and `.tunnel/keys.env`
    (gitignored, 0600). Configs reference secrets as `os.environ/NAME` strings. Never
    paste a real key into YAML, code, logs, or this doc.
@@ -200,8 +214,11 @@ These are environment facts, not opinions. More detail in `MEMORY.md` Lessons.
 7. **LiteLLM loads custom callbacks relative to the config file's directory**, not
    `sys.path`. That is why `configs/litellm/tier_hook.py` and `guard_hook.py` (generated
    one-line shims) exist; do not delete them or "simplify" the callback path.
-8. **qwen-0.8b has LMCache disabled on purpose** (hybrid-attention model; the LMCache
-   KV connector breaks engine startup). It uses vLLM's native prefix cache.
+8. **Hybrid-attention models (qwen-0.8b) use LMCache via the MP connector.**
+   Each enabled instance runs a companion `lmcache server` on instance port
+   + 1000 (`logs/lmcache-<id>.log`); Mamba hybrids need `mamba_align: true`
+   and `chunk_size` = the unified attention block size N from the startup
+   log. See docs/lmcache.md.
 9. **A vLLM instance can hang during `make up`'s sequential handoff** - the API server
    comes up but its EngineCore never spawns (stuck in `futex_wait`, no OOM, no traceback),
    seen adding the 3rd instance. The vLLM child stdout is block-buffered to `logs/<id>.log`,
@@ -218,6 +235,8 @@ These are environment facts, not opinions. More detail in `MEMORY.md` Lessons.
 | 429 from the gateway | tier rpm/tpm limit hit; by design, not a bug |
 | 400 "Blocked by content guardrail" | XGuard flagged the prompt/response; category+score in the error body. Tune `threshold` or opt the service out |
 | Instance never healthy | its log at `logs/<id>.log`, then `nvidia-smi` for OOM/orphans (see gotcha 9 for the EngineCore-never-spawned hang) |
+| Instance with lmcache stuck at launch | `logs/lmcache-<id>.log`; `serve` fail-fasts if the lmcache server never opens its port |
+| Warm TTFT not improving (cache "dead") | `grep -E "Stored\|Prefetch" logs/lmcache-<id>.log`; for Mamba hybrids check `chunk_size` matches the block size N in the vLLM startup log |
 | S3 instance refuses to launch | AWS creds unset in `.env` (serve fails fast), or `runai-model-streamer` not installed; preflight bucket+creds with a boto3 list call (free) |
 | Proxy up but model errors | stale derived config: `make generate` + proxy restart |
 | Spend stuck at 0 | Postgres down (`docker ps`), or `DATABASE_URL` unset in `.env` |
