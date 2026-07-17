@@ -50,6 +50,7 @@ docs/*
 !docs/deepseek.md
 !docs/s3-llm.md
 !docs/PLAYBOOK.md
+!docs/performance-kv-cache.md
 
 # Test artifacts
 .coverage
@@ -68,3 +69,6 @@ pids/
 # uv.lock
 # loadgen artifacts (results + plots are per-run outputs)
 tests/services/loadgen/results/
+
+# performbench per-run artifacts (RESULTS.md is the committed summary)
+tests/services/performbench/results/

@@ -1,0 +1,130 @@
+# Performance benchmark scenario catalog. Run via:
+#
+#   python tests/services/performbench/main.py --list
+#   python tests/services/performbench/main.py smoke
+#   make perf SCENARIOS="smoke goodput"        # default: the `default_suite` list
+#
+# Placeholders resolved by main.py at run time:
+#   {url}      base URL of the target (gateway or instance)
+#   {model}    model name the target expects (registry id via gateway,
+#              served model name when hitting a vLLM instance directly)
+#   {output}   per-scenario artifact directory (created fresh each run)
+#
+# target:
+#   gateway         through LiteLLM :4000 (auth via LITELLM_MASTER_KEY);
+#                   measures what services actually experience.
+#   instance:<id>   direct to the vLLM port; isolates engine performance
+#                   from proxy overhead. <id> is a registry instance id.
+#
+# gate: true means a nonzero exit of the scenario fails the whole run
+# (make perf exits nonzero) — use for pre-merge / pre-release checks.
+
+default_suite: [smoke, kv-longdoc]
+
+scenarios:
+  # Fast sanity profile: is the engine serving at sane latency at all?
+  # Small enough to run after every feature branch.
+  smoke:
+    kind: aiperf
+    target: instance:qwen-0.8b
+    gate: true
+    description: "Quick static-ISL/OSL streaming profile, concurrency 4"
+    args:
+      - --endpoint-type
+      - chat
+      - --streaming
+      - --isl
+      - "512"
+      - --osl
+      - "64"
+      - --concurrency
+      - "4"
+      - --request-count
+      - "40"
+      - --warmup-request-count
+      - "8"
+
+  # Sustained mixed workload: chat-, summarize- and long-QA-shaped requests
+  # in one run (sequence-length distribution). Closest to real traffic.
+  mixed:
+    kind: aiperf
+    target: gateway
+    description: "Mixed ISL/OSL distribution through the gateway, concurrency 8"
+    args:
+      - --endpoint-type
+      - chat
+      - --streaming
+      - --sequence-distribution
+      - "256|50,64|20:60;1024|150,128|40:30;4096|300,256|60:10"
+      - --concurrency
+      - "8"
+      - --request-count
+      - "120"
+      - --warmup-request-count
+      - "10"
+
+  # SLA gate: goodput = fraction of requests meeting the SLOs below.
+  # Tune the SLOs to the tier promises before wiring into CI.
+  goodput:
+    kind: aiperf
+    target: gateway
+    description: "Goodput vs SLOs (TTFT<=2000ms, ITL<=100ms) at concurrency 8"
+    args:
+      - --endpoint-type
+      - chat
+      - --streaming
+      - --isl
+      - "1024"
+      - --osl
+      - "128"
+      - --concurrency
+      - "8"
+      - --request-count
+      - "100"
+      - --goodput
+      - "time_to_first_token:2000 inter_token_latency:100"
+
+  # Multi-turn conversations: KV reuse across turns, session handling.
+  multiturn:
+    kind: aiperf
+    target: gateway
+    description: "Multi-turn conversation load (KV reuse across turns)"
+    args:
+      - --endpoint-type
+      - chat
+      - --streaming
+      - --conversation-num
+      - "30"
+      - --concurrency
+      - "6"
+
+  # KV-cache verification with a hard gate: repeated long-document prompts
+  # must show a TTFT gain from LMCache. Direct-to-instance so proxy overhead
+  # can't mask the cache signal.
+  kv-longdoc:
+    kind: long_doc_qa
+    target: instance:qwen-0.8b
+    gate: true
+    description: "Long-doc repeat QA; gate: warm TTFT gain >= 1.5x"
+    args:
+      - --num-documents
+      - "8"
+      - --document-length
+      - "3000"
+      - --repeat-count
+      - "2"
+      - --repeat-mode
+      - random
+      - --max-inflight-requests
+      - "2"
+      - --expected-ttft-gain
+      - "1.5"
+
+  # TTFT vs context length curve: prefill scaling of the engine.
+  ttft-sweep:
+    kind: ttft_estimator
+    target: instance:qwen-0.8b
+    description: "TTFT scaling across context lengths"
+    args:
+      - --context-lengths
+      - "1000,2000,4000,8000,12000"
