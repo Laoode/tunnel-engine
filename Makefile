@@ -9,8 +9,8 @@ export TUNNEL_REGISTRY := $(REGISTRY)
 .DEFAULT_GOAL := help
 
 .PHONY: help generate list health proxy serve test lint fmt check up stop down \
-        db-up db-down keys-sync keys-list obs-up obs-down loadtest loadtest-plots \
-        guard-dataset guard-judge guard-bench
+        db-up db-down db-ensure keys-sync keys-list obs-up obs-down loadtest \
+        loadtest-plots guard-dataset guard-judge guard-bench perf perf-list
 
 help:
 	@echo ""
@@ -36,17 +36,28 @@ list: ## List all registered model instances
 health: ## Poll health of all vLLM instances
 	$(PYTHON) -m tunnel.cli health
 
-start: ## Health-gate + proxy: wait for all vLLM instances, then launch proxy
+# Lightning studio restarts wipe Docker containers; the proxy then dies with
+# prisma "Not connected to the query engine". Auto-heal by starting tunnel-pg
+# before anything that launches the proxy.
+db-ensure: ## Start Postgres only if the tunnel-pg container is not running
+	@if docker inspect -f '{{.State.Running}}' tunnel-pg 2>/dev/null | grep -q true; then \
+		echo ".  tunnel-pg already running"; \
+	else \
+		echo ".  tunnel-pg not running -> make db-up"; \
+		$(MAKE) db-up; \
+	fi
+
+start: db-ensure ## Health-gate + proxy: wait for all vLLM instances, then launch proxy
 	$(PYTHON) -m tunnel.cli start
 
-start-timeout: ## Same as start with custom timeout. Usage: make start-timeout TIMEOUT=120
+start-timeout: db-ensure ## Same as start with custom timeout. Usage: make start-timeout TIMEOUT=120
 	@if [ -z "$(TIMEOUT)" ]; then echo "Usage: make start-timeout TIMEOUT=<seconds>"; exit 1; fi
 	$(PYTHON) -m tunnel.cli start --timeout $(TIMEOUT)
 
-up: ## Launch ALL instances in background, health-gate, then start proxy
+up: db-ensure ## Launch ALL instances in background, health-gate, then start proxy
 	$(PYTHON) -m tunnel.cli up
 
-up-timeout: ## Same as up with custom timeout. Usage: make up-timeout TIMEOUT=120
+up-timeout: db-ensure ## Same as up with custom timeout. Usage: make up-timeout TIMEOUT=120
 	@if [ -z "$(TIMEOUT)" ]; then echo "Usage: make up-timeout TIMEOUT=<seconds>"; exit 1; fi
 	$(PYTHON) -m tunnel.cli up --timeout $(TIMEOUT)
 
@@ -137,6 +148,12 @@ loadtest-plots: ## Render analysis PNGs from loadgen results
 guard-bench: ## Benchmark XGuard latency + accuracy on the judged dataset (needs a running fleet)
 	$(PYTHON) tests/services/guardbench/main.py
 
+perf: ## Unified performance bench (SCENARIOS="smoke goodput"; default: gated suite; running engine)
+	$(PYTHON) tests/services/performbench/main.py $(SCENARIOS)
+
+perf-list: ## List available performance scenarios
+	$(PYTHON) tests/services/performbench/main.py --list
+
 lint: ## Lint with ruff
 	ruff check $(LINT_PATHS)
 
@@ -156,8 +173,8 @@ uninstall: ## Uninstall dependency
 	uv pip uninstall -r tunnel-engine/requirements/dev.txt -y
 
 kill:
-	@pkill -9 -f -i vllm 2>/dev/null || true
-	@nvidia-smi --query-compute-apps=pid --format=csv,noheader | xargs -r kill -9
+	@nvidia-smi --query-compute-apps=pid --format=csv,noheader | xargs -r kill -9 2>/dev/null || true
+	@pkill -9 -f -i "[v]llm" 2>/dev/null || true
 
 view-models: ## List all cached models
 	@echo "Cached models:"
