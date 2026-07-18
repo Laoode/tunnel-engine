@@ -10,7 +10,8 @@ export TUNNEL_REGISTRY := $(REGISTRY)
 
 .PHONY: help generate list health proxy serve test lint fmt check up stop down \
         db-up db-down db-ensure keys-sync keys-list obs-up obs-down loadtest \
-        loadtest-plots guard-dataset guard-judge guard-bench perf perf-list
+        loadtest-plots guard-dataset guard-judge guard-bench perf perf-list \
+        bonsai-build bonsai-up bonsai-down bonsai-status
 
 help:
 	@echo ""
@@ -71,6 +72,20 @@ stop: ## Stop ONE instance, leaving the others and the proxy running. Usage: mak
 
 down: ## Stop every instance (serve or up) and the proxy, then free the GPU
 	$(PYTHON) -m tunnel.cli down
+
+# Bonsai GGUF bench servers (PrismML llama.cpp): internal benchmarking only,
+# routed via remote_models, not managed by the vLLM orchestrator.
+bonsai-build: ## One-time clone + CUDA build of the PrismML llama.cpp fork
+	bash scripts/bonsai-llamacpp.sh build
+
+bonsai-up: ## Start both Bonsai GGUF servers (:8005, :8006) and wait for health
+	bash scripts/bonsai-llamacpp.sh up
+
+bonsai-down: ## Stop the Bonsai GGUF servers
+	bash scripts/bonsai-llamacpp.sh down
+
+bonsai-status: ## Show Bonsai GGUF server status
+	bash scripts/bonsai-llamacpp.sh status
 
 # Lightning's /teamspace drops EMPTY directories on studio restart, but Postgres
 # refuses to boot without them (pg_notify etc.), so recreate them before starting.
