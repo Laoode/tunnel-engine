@@ -166,8 +166,9 @@ fmt-check: ## Check formatting without writing (CI-safe)
 tree: ## Show project tree, excluding common noise
 	tree -I '__pycache__|*.pyc|.pytest_cache|.git|.venv|venv|dist|build'
 
-install: ## Install dependency
+install: ## Install dependencies (aiperf goes in its own venv: rich conflict with litellm)
 	uv pip install -r requirements/dev.txt --torch-backend=auto
+	uv tool install --upgrade aiperf
 
 uninstall: ## Uninstall dependency
 	uv pip uninstall -r tunnel-engine/requirements/dev.txt -y

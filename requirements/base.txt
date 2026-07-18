@@ -1,6 +1,5 @@
 # Inference
---extra-index-url https://wheels.vllm.ai/nightly
-vllm
+vllm==0.23.0
 runai-model-streamer[s3]>=0.15.7  # stream s3:// model weights (load_format: runai_streamer)
 lmcache==0.5.1         # KV-cache offload layer (MP server + hybrid-attention support)
 redis>=5.0             # client for LMCache redis remote backend
