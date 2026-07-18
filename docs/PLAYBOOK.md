@@ -5,7 +5,7 @@
 > behavior described here must update, add, or delete the matching section in the same
 > change. When this file and the code disagree, the code wins; fix the playbook.
 >
-> Last verified against the code: 2026-07-17 (LMCache MP + performbench, uncommitted).
+> Last verified against the code: 2026-07-18 (prod tools-bench fleet, feat/prod-tools-bench).
 
 ## What this engine is, in one paragraph
 
@@ -42,9 +42,23 @@ configs/models.yaml  ──make generate──▶  derived configs  ──make u
 | vLLM instances | 8000, 8001, ... | `make up` or `make serve ID=` | one process per registry instance |
 | LMCache servers | 9000, 9001, ... (= inst. port + 1000) | auto by `serve`/`up` per `lmcache.enabled` instance | KV cache tiers (MP mode); survives `make stop ID=`, cleaned by `make down` |
 | XGuard classifier | 8002 | `make up` or `make serve ID=xguard-0.6b` | `internal:` instance; content safety, not client-routable |
+| Bonsai GGUF servers (prod) | 8005, 8006 | `make bonsai-up` | PrismML llama.cpp fork; routed as `remote_models`, NOT orchestrator-managed (no auto-restart, VRAM outside `make check` budget); pid/logs in `.bonsai/` |
 | Postgres (keys, spend logs) | 5433 | `make db-up` (auto via `up`/`start` when the container is down) | Docker, data in `/teamspace/.../.tunnel-pg` |
 | Prometheus | 9092 | `make obs-up` | 9090/9091 are taken by Lightning infra |
 | Grafana | 3000 | `make obs-up` | admin/admin, dashboard auto-provisioned |
+
+## Prod (tools-bench) specifics — RTX Pro 6000
+
+- Every prod make target takes `REGISTRY=configs/models-prod.yaml`. Boot order:
+  `make generate` -> `setsid nohup make up-timeout TIMEOUT=1200 ... &` (NEVER kill a
+  backgrounded `up`: its instances are process-group children and die with it) ->
+  `make bonsai-up` -> `make keys-sync`. Watch `logs/<id>.log` per instance during
+  boot; don't wait on the aggregate gate.
+- One endpoint for the bench: `http://<host>:4000/v1`, key `TOOLS_BENCH...` in
+  `.tunnel/keys.env`, all 7 models on the key. No guardrails, single `internal`
+  tier, no budgets.
+- Sizing, per-variant lmcache chunk sizes, and every boot failure + fix from the
+  2026-07-18 bring-up: see `docs/tools-bench-recap.md`.
 
 ## Repo map
 

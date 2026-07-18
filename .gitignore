@@ -51,6 +51,7 @@ docs/*
 !docs/s3-llm.md
 !docs/PLAYBOOK.md
 !docs/performance-kv-cache.md
+!docs/tools-bench-recap.md
 
 # Test artifacts
 .coverage
