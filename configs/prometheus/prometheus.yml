@@ -10,15 +10,25 @@ scrape_configs:
   - targets:
     - localhost:8000
     labels:
-      instance_id: qwen-0.8b
-      model: Qwen/Qwen3.5-0.8B
+      instance_id: qwen3.5-0.8b
+      model: s3://llm-qwen3.5-bucket/Qwen3.5-0.8B
   - targets:
     - localhost:8001
     labels:
-      instance_id: minicpm-1b
-      model: openbmb/MiniCPM5-1B
+      instance_id: qwen3.5-2b
+      model: s3://llm-qwen3.5-bucket/Qwen3.5-2B
   - targets:
     - localhost:8002
     labels:
-      instance_id: xguard-0.6b
-      model: Alibaba-AAIG/YuFeng-XGuard-Reason-0.6B
+      instance_id: qwen3.5-4b
+      model: s3://llm-qwen3.5-bucket/Qwen3.5-4B
+  - targets:
+    - localhost:8003
+    labels:
+      instance_id: gemma-4-e2b
+      model: s3://llm-gemma4-bucket/gemma-4-E2B-it
+  - targets:
+    - localhost:8004
+    labels:
+      instance_id: minicpm5-1b
+      model: s3://llm-minicpm5-bucket/MiniCPM5-1B
